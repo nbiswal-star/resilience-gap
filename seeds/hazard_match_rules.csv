@@ -1,0 +1,30 @@
+declaration_hazard_family,event_hazard_family,rule
+Severe Storm & Wind,Severe Storm & Wind,same_family
+Severe Storm & Wind,Tornado,companion_hazard
+Severe Storm & Wind,Flood,companion_hazard
+Severe Storm & Wind,Landslide,companion_hazard
+Severe Storm & Wind,Winter Weather,companion_hazard
+Flood,Flood,same_family
+Flood,Landslide,companion_hazard
+Flood,Severe Storm & Wind,companion_hazard
+Flood,Tornado,companion_hazard
+Tornado,Tornado,same_family
+Tornado,Severe Storm & Wind,companion_hazard
+Tornado,Flood,companion_hazard
+Tropical Cyclone,Tropical Cyclone,same_family
+Tropical Cyclone,Flood,companion_hazard
+Tropical Cyclone,Severe Storm & Wind,companion_hazard
+Tropical Cyclone,Tornado,companion_hazard
+Tropical Cyclone,Coastal & Marine,companion_hazard
+Tropical Cyclone,Landslide,companion_hazard
+Coastal & Marine,Coastal & Marine,same_family
+Coastal & Marine,Flood,companion_hazard
+Coastal & Marine,Severe Storm & Wind,companion_hazard
+Coastal & Marine,Winter Weather,companion_hazard
+Coastal & Marine,Tropical Cyclone,companion_hazard
+Winter Weather,Winter Weather,same_family
+Winter Weather,Flood,companion_hazard
+Landslide,Landslide,same_family
+Landslide,Flood,companion_hazard
+Wildfire,Wildfire,same_family
+Drought,Drought,same_family

@@ -1,0 +1,133 @@
+source,source_value,hazard_family,is_weather
+noaa,Astronomical Low Tide,Coastal & Marine,true
+noaa,Avalanche,Winter Weather,true
+noaa,Blizzard,Winter Weather,true
+noaa,Coastal Flood,Flood,true
+noaa,Cold/Wind Chill,Winter Weather,true
+noaa,Debris Flow,Landslide,true
+noaa,Dense Fog,Other Weather,true
+noaa,Dense Smoke,Other Weather,true
+noaa,Drought,Drought,true
+noaa,Dust Devil,Severe Storm & Wind,true
+noaa,Dust Storm,Severe Storm & Wind,true
+noaa,Excessive Heat,Heat,true
+noaa,Extreme Cold/Wind Chill,Winter Weather,true
+noaa,Flash Flood,Flood,true
+noaa,Flood,Flood,true
+noaa,Freezing Fog,Other Weather,true
+noaa,Frost/Freeze,Winter Weather,true
+noaa,Funnel Cloud,Tornado,true
+noaa,Hail,Severe Storm & Wind,true
+noaa,Heat,Heat,true
+noaa,Heavy Rain,Flood,true
+noaa,Heavy Snow,Winter Weather,true
+noaa,High Surf,Coastal & Marine,true
+noaa,High Wind,Severe Storm & Wind,true
+noaa,Hurricane,Tropical Cyclone,true
+noaa,Hurricane (Typhoon),Tropical Cyclone,true
+noaa,Ice Storm,Winter Weather,true
+noaa,Lake-Effect Snow,Winter Weather,true
+noaa,Lakeshore Flood,Flood,true
+noaa,Landslide,Landslide,true
+noaa,Lightning,Severe Storm & Wind,true
+noaa,Marine Dense Fog,Coastal & Marine,true
+noaa,Marine Hail,Coastal & Marine,true
+noaa,Marine High Wind,Coastal & Marine,true
+noaa,Marine Hurricane/Typhoon,Coastal & Marine,true
+noaa,Marine Lightning,Coastal & Marine,true
+noaa,Marine Strong Wind,Coastal & Marine,true
+noaa,Marine Thunderstorm Wind,Coastal & Marine,true
+noaa,Marine Tropical Depression,Coastal & Marine,true
+noaa,Marine Tropical Storm,Coastal & Marine,true
+noaa,Northern Lights,Other Weather,true
+noaa,Rip Current,Coastal & Marine,true
+noaa,Seiche,Flood,true
+noaa,Sleet,Winter Weather,true
+noaa,Sneakerwave,Coastal & Marine,true
+noaa,Storm Surge/Tide,Tropical Cyclone,true
+noaa,Strong Wind,Severe Storm & Wind,true
+noaa,Thunderstorm Wind,Severe Storm & Wind,true
+noaa,Tornado,Tornado,true
+noaa,Tropical Depression,Tropical Cyclone,true
+noaa,Tropical Storm,Tropical Cyclone,true
+noaa,Tsunami,Geologic,false
+noaa,Volcanic Ash,Geologic,false
+noaa,Volcanic Ashfall,Geologic,false
+noaa,Waterspout,Tornado,true
+noaa,Wildfire,Wildfire,true
+noaa,Winter Storm,Winter Weather,true
+noaa,Winter Weather,Winter Weather,true
+fema,Biological,Non-natural,false
+fema,Chemical,Non-natural,false
+fema,Civil Unrest,Non-natural,false
+fema,Coastal Storm,Coastal & Marine,true
+fema,Dam/Levee Break,Non-natural,false
+fema,Drought,Drought,true
+fema,Earthquake,Geologic,false
+fema,Explosion,Non-natural,false
+fema,Fire,Wildfire,true
+fema,Fishing Losses,Non-natural,false
+fema,Flood,Flood,true
+fema,Freezing,Winter Weather,true
+fema,Human Cause,Non-natural,false
+fema,Hurricane,Tropical Cyclone,true
+fema,Mud/Landslide,Landslide,true
+fema,Other,Other,false
+fema,Severe Ice Storm,Winter Weather,true
+fema,Severe Storm,Severe Storm & Wind,true
+fema,Snowstorm,Winter Weather,true
+fema,Straight-Line Winds,Severe Storm & Wind,true
+fema,Terrorist,Non-natural,false
+fema,Tornado,Tornado,true
+fema,Toxic Substances,Non-natural,false
+fema,Tropical Depression,Tropical Cyclone,true
+fema,Tropical Storm,Tropical Cyclone,true
+fema,Tsunami,Geologic,false
+fema,Typhoon,Tropical Cyclone,true
+fema,Volcanic Eruption,Geologic,false
+fema,Winter Storm,Winter Weather,true
+hma,Biological,Non-natural,false
+hma,Biological incident,Non-natural,false
+hma,Chemical,Non-natural,false
+hma,Chemical incident,Non-natural,false
+hma,Civil Unrest,Non-natural,false
+hma,Coastal Storm,Coastal & Marine,true
+hma,Crop Losses,Drought,true
+hma,Cyber incident,Non-natural,false
+hma,Dam/Levee Break,Non-natural,false
+hma,Dam/Levee break,Non-natural,false
+hma,Disease,Non-natural,false
+hma,Drought,Drought,true
+hma,Earthquake,Geologic,false
+hma,Extreme temperature,Heat,true
+hma,Fire,Wildfire,true
+hma,Fishing Losses,Non-natural,false
+hma,Flood,Flood,true
+hma,Flooding,Flood,true
+hma,Freezing,Winter Weather,true
+hma,Hostile action,Non-natural,false
+hma,Human Cause,Non-natural,false
+hma,Hurricane,Tropical Cyclone,true
+hma,Infrastructure failure,Non-natural,false
+hma,Land Subsidence,Geologic,false
+hma,Landslide/Debris flow,Landslide,true
+hma,Mud/Landslide,Landslide,true
+hma,Nuclear,Non-natural,false
+hma,Other (Specify in Comments),Other,false
+hma,Radiological incident,Non-natural,false
+hma,Severe Ice Storm,Winter Weather,true
+hma,Severe Storm(s),Severe Storm & Wind,true
+hma,Severe storm,Severe Storm & Wind,true
+hma,Snow,Winter Weather,true
+hma,Special Events,Non-natural,false
+hma,Terrorist,Non-natural,false
+hma,Tornado,Tornado,true
+hma,Toxic Substances,Non-natural,false
+hma,Tropical Cyclones,Tropical Cyclone,true
+hma,Tropical cyclone (Hurricane/Typhoon),Tropical Cyclone,true
+hma,Tsunami,Geologic,false
+hma,Typhoon,Tropical Cyclone,true
+hma,Uncategorized,Other,false
+hma,Volcano,Geologic,false
+hma,Windstorms,Severe Storm & Wind,true
+hma,Winter storm,Winter Weather,true

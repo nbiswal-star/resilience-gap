@@ -1,0 +1,4 @@
+state_abbr,alias,county_fips,note
+VI,St. Croix,78010,Census county-equivalent name is "St. Croix Island"
+VI,St. John,78020,Census county-equivalent name is "St. John Island"
+VI,St. Thomas,78030,Census county-equivalent name is "St. Thomas Island"
