@@ -1,0 +1,263 @@
+# Source registry: one entry per external dataset.
+# Every URL, host and fact here was verified against the live source on 2026-11-08
+# (see docs/sources.md). `health` drives `resgap source-check` and the ingestion preflight:
+#   allowed_hosts  - every redirect hop and the final URL must stay on these hosts (HTTPS)
+#   fingerprint    - hash of the normalised header / record keys observed on 2026-11-08;
+#                    a mismatch means the publisher changed the schema (fail fast before download)
+#   fallbacks      - only endpoints verified to serve the same content are listed
+sources:
+
+  noaa_storm_events:
+    provider: NOAA National Centers for Environmental Information (NCEI)
+    title: Storm Events Database - bulk CSV "details" files
+    landing_page: https://www.ncei.noaa.gov/access/storm-events-database/
+    listing_url: https://www.ncei.noaa.gov/pub/data/swdi/stormevents/csvfiles/
+    # File names embed the data year (dYYYY) and a creation date (cYYYYMMDD) that changes
+    # whenever NCEI revises that year, so files are discovered from the listing, never hardcoded.
+    file_pattern: 'StormEvents_details-ftp_v1\.0_d(?P<year>\d{4})_c(?P<created>\d{8})\.csv\.gz'
+    format: csv.gz
+    structure: structured
+    raw_table: raw.noaa_storm_events_details
+    allowed_hosts: [www.ncei.noaa.gov]
+    terms: >-
+      U.S. federal government data (NOAA/NCEI); no use restriction is stated in the bulk-download
+      README. Cite NCEI Storm Events Database and do not imply NOAA endorsement.
+    update_cadence: Current-year file regenerated monthly; prior years revised in place (new cYYYYMMDD).
+    health:
+      kind: noaa_listing
+      fingerprint: "b96502785a9d4333"
+      # www1.ncdc.noaa.gov/pub/... only redirects to the same NCEI path (verified), so it is not an
+      # independent fallback. Already-downloaded files in the object store are reused instead.
+      fallbacks: []
+
+  nws_zone_county:
+    provider: NOAA National Weather Service (NWS) GIS
+    title: County - Public Forecast Zones Correlation file (versioned snapshots)
+    landing_page: https://www.weather.gov/gis/ZoneCounty
+    base_url: https://www.weather.gov/source/gis/Shapefiles/County/
+    file_pattern: 'bp\d{2}[a-z]{2}\d{2}\.dbx'
+    # Not linked from the landing page but served by NWS (HTTP 200 verified 2026-11-08).
+    nws_hosted_files: [bp03mr20.dbx, bp10nv20.dbx, bp30mr21.dbx, bp08se21.dbx, bp22mr22.dbx,
+                       bp13se22.dbx, bp08mr23.dbx, bp19se23.dbx, bp05mr24.dbx, bp10se24.dbx]
+    # Published by NWS but never in effect, so never used as a snapshot:
+    excluded_files:
+      bp03mr26.dbx: "planned 2026 version; NWS moved the implementation to 16 Apr 2026 (bp16ap26)"
+      bp07se22.dbx: "superseded six days later by the NWS-hosted bp13se22; no evidence it took effect"
+    # A snapshot whose successor is more than this many days later sits in a documented gap
+    # (no intermediate version found); zone matches inside a gap must be name-verified.
+    gap_threshold_days: 400
+    format: pipe-delimited text, no header
+    columns: [state, zone, cwa, name, state_zone, county, fips, time_zone, fe_area, lat, lon]
+    structure: structured (reference crosswalk)
+    raw_table: raw.nws_zone_county
+    allowed_hosts: [www.weather.gov]
+    terms: >-
+      NWS web information is public domain unless noted; do not claim it as your own or imply
+      NOAA/NWS endorsement (https://www.weather.gov/disclaimer).
+    update_cadence: New file when forecast zones change (2020-2026 versions are NWS-hosted).
+    archive:
+      # Versions before 2020 are no longer on NWS servers (HTTP 404). The Internet Archive holds
+      # byte-for-byte captures of the original NWS URLs; each download is verified against the
+      # archive's SHA-1 digest and kept with provenance_tier = internet_archive. Discovery used
+      # the archive's CDX index; no version between Apr 2017 and Mar 2020 was ever captured.
+      enabled: true
+      allowed_hosts: [web.archive.org]
+      url_template: "https://web.archive.org/web/{timestamp}id_/{original}"
+      captures:   # Internet Archive copies of NWS-published files; sha1 verified on download
+        - {file: bp28de04.dbx, role: archive_only, timestamp: "20051202045534", sha1_base32: 3SC7YOV6ZNCUGLN77IECCMGEUONWNOSF, original: "http://www.nws.noaa.gov:80/geodata/catalog/wsom/data/bp28de04.dbx"}
+        - {file: bp25my05.dbx, role: archive_only, timestamp: "20050918061032", sha1_base32: EXJCBR2KNDRHK6AF3NYBMTTVVSTOPSV6, original: "http://weather.gov/geodata/catalog/wsom/data/bp25my05.dbx"}
+        - {file: bp04ja06.dbx, role: archive_only, timestamp: "20060221044516", sha1_base32: ZEWYUKBFGE3CS7AZRD3YDNFZLO77UCG2, original: "http://www.weather.gov:80/geodata/catalog/wsom/data/bp04ja06.dbx"}
+        - {file: bp06ja06.dbx, role: archive_only, timestamp: "20060409142748", sha1_base32: ASJXN4QYKLEMP2Y3HCJC2KJVLOIG2KPD, original: "http://www.nws.noaa.gov:80/geodata/catalog/wsom/data/bp06ja06.dbx"}
+        - {file: bp10fe06.dbx, role: archive_only, timestamp: "20060622165329", sha1_base32: ZWMEXCLJKLB6XHP4J2DEO2UDUCLK6VNK, original: "http://www.weather.gov:80/geodata/catalog/wsom/data/bp10fe06.dbx"}
+        - {file: bp12fe06.dbx, role: archive_only, timestamp: "20060622165241", sha1_base32: C6TUTMT4UGR5A626GGX5VMQGGR2YRUBH, original: "http://www.weather.gov:80/geodata/catalog/wsom/data/bp12fe06.dbx"}
+        - {file: bp14fe06.dbx, role: archive_only, timestamp: "20060622165342", sha1_base32: IAK5SU2Z6AQ7PVIHDNMAFJAHP4IHNFJN, original: "http://www.weather.gov:80/geodata/catalog/wsom/data/bp14fe06.dbx"}
+        - {file: bp16mr06.dbx, role: archive_only, timestamp: "20061007223212", sha1_base32: TWJ6KTERQJUDVH4ZYJIK2GN4LJRFXNVM, original: "http://www.nws.noaa.gov/geodata/catalog/wsom/data/bp16mr06.dbx"}
+        - {file: bp10oc06.dbx, role: archive_only, timestamp: "20061124031613", sha1_base32: N5LPV6TBRRVWBUUZJ3LGBDYAXFJIRFIU, original: "http://www.weather.gov:80/geodata/catalog/wsom/data/bp10oc06.dbx"}
+        - {file: bp31my07.dbx, role: archive_only, timestamp: "20070711114526", sha1_base32: TYCJYZT7GR5N3V6XYPKAIHUAMV2QXNA6, original: "http://www.nws.noaa.gov:80/geodata/catalog/wsom/data/bp31my07.dbx"}
+        - {file: bp01au07.dbx, role: archive_only, timestamp: "20080213225728", sha1_base32: S75MQMXIVD5FQY7XAXKLVVG4B7CS6O74, original: "http://www.nws.noaa.gov:80/geodata/catalog/wsom/data/bp01au07.dbx"}
+        - {file: bp01ap08.dbx, role: archive_only, timestamp: "20081203133511", sha1_base32: CDZHCMWBGSL527BV567XKYQPCJEH2JRG, original: "http://www.weather.gov:80/geodata/catalog/wsom/data/bp01ap08.dbx"}
+        - {file: bp03oc08.dbx, role: archive_only, timestamp: "20090706044721", sha1_base32: M62J3ZAT4XXBONGK2N2C4UKSXHKUQKTV, original: "http://www.weather.gov/geodata/catalog/wsom/data/bp03oc08.dbx"}  # :80 form returns 404 at the archive; this form verified (same SHA-1)
+        - {file: bp01ap09.dbx, role: archive_only, timestamp: "20090430175744", sha1_base32: IHI73DV52QHY5FKXD2E3WSFYAYPRHVIM, original: "http://www.weather.gov:80/geodata/catalog/wsom/data/bp01ap09.dbx"}
+        - {file: bp11ja10.dbx, role: archive_only, timestamp: "20100831160410", sha1_base32: 6LANZQSIQPFX5PNIBVMMIFHMVEZZAGHL, original: "http://www.weather.gov:80/geodata/catalog/wsom/data/bp11ja10.dbx"}
+        - {file: bp01ap10.dbx, role: archive_only, timestamp: "20100801052148", sha1_base32: KTAM3V43E42RQNQE7WSM6DJTFA5K2VQQ, original: "http://www.weather.gov:80/geodata/catalog/wsom/data/bp01ap10.dbx"}
+        - {file: bp11my10.dbx, role: archive_only, timestamp: "20100831160845", sha1_base32: RY774QVB2SEA6ISDGJU3O6CPRTEGCJOG, original: "http://www.weather.gov:80/geodata/catalog/wsom/data/bp11my10.dbx"}
+        - {file: bp01jn10.dbx, role: archive_only, timestamp: "20100831154702", sha1_base32: ESEG6S7LAWCHELJQ2GXNTQPKM6AXFC4S, original: "http://www.weather.gov:80/geodata/catalog/wsom/data/bp01jn10.dbx"}
+        - {file: bp15oc10.dbx, role: archive_only, timestamp: "20101117073800", sha1_base32: UIQMRBWKJHCK7QGGFCXNREJDJMGWVI76, original: "http://www.weather.gov:80/geodata/catalog/wsom/data/bp15oc10.dbx"}
+        - {file: bp15nv10.dbx, role: archive_only, timestamp: "20101115033723", sha1_base32: PAPLPEUVZ2KAFBYQJCU4MGCLJA4JB27N, original: "http://www.weather.gov:80/geodata/catalog/wsom/data/bp15nv10.dbx"}
+        - {file: bp01de10.dbx, role: archive_only, timestamp: "20110519040100", sha1_base32: VVCEYKZL47DPG3HAK7U47RECYRBUSGER, original: "http://www.weather.gov/geodata/catalog/wsom/data/bp01de10.dbx"}
+        - {file: bp03my11.dbx, role: archive_only, timestamp: "20110704142722", sha1_base32: WLOSAIUIPN5GN4BO7Y4IJM6T2BGLYUD7, original: "http://www.weather.gov/geodata/catalog/wsom/data/bp03my11.dbx"}
+        - {file: bp31my11.dbx, role: archive_only, timestamp: "20110704142659", sha1_base32: KMPKJNUZ4Z63NB24CSST7VZYEMSRQWAA, original: "http://www.weather.gov/geodata/catalog/wsom/data/bp31my11.dbx"}
+        - {file: bp04au11.dbx, role: archive_only, timestamp: "20110917075547", sha1_base32: UJRJJURFHZCGEDCCJY327H3CIBRK5NFK, original: "http://www.weather.gov:80/geodata/catalog/wsom/data/bp04au11.dbx"}
+        - {file: bp03ap12.dbx, role: archive_only, timestamp: "20121031233857", sha1_base32: XOKIPSAXDCT37IWK7QDS24KU62674JPS, original: "http://www.nws.noaa.gov/geodata/catalog/wsom/data/bp03ap12.dbx"}
+        - {file: bp04de12.dbx, role: archive_only, timestamp: "20130927104302", sha1_base32: N6JUEAVVAFFGPUALJIBUOQE4DUF2HJPC, original: "http://www.nws.noaa.gov:80/geodata/catalog/wsom/data/bp04de12.dbx"}
+        - {file: bp07oc14.dbx, role: archive_only, timestamp: "20141107115206", sha1_base32: BMOD7GR2YFNAXAODG3MSQAJZE2JWQ3PV, original: "http://www.nws.noaa.gov:80/geodata/catalog/wsom/data/bp07oc14.dbx"}
+        - {file: bp03de14.dbx, role: archive_only, timestamp: "20150423172817", sha1_base32: AWDQMUHSMG7PTAHRABLOQE6P3O4GMCHC, original: "http://www.nws.noaa.gov:80/geodata/catalog/wsom/data/bp03de14.dbx"}
+        - {file: bp04fe15.dbx, role: archive_only, timestamp: "20150223210701", sha1_base32: ALVB2EPYFJERMLS47MDRAZ4XCKSTN4VZ, original: "http://www.nws.noaa.gov:80/geodata/catalog/wsom/data/bp04fe15.dbx"}
+        - {file: bp08se15.dbx, role: archive_only, timestamp: "20151024020856", sha1_base32: KFQY5BLJLXBENW5DZSHG3HO5LM5ULDHW, original: "http://www.nws.noaa.gov:80/geodata/catalog/wsom/data/bp08se15.dbx"}
+        - {file: bp01oc15.dbx, role: archive_only, timestamp: "20151024020427", sha1_base32: 63CD2KG3YTW7E7X3LC774WAJUXT56UWS, original: "http://www.nws.noaa.gov:80/geodata/catalog/wsom/data/bp01oc15.dbx"}
+        - {file: bp10nv15.dbx, role: archive_only, timestamp: "20160604164016", sha1_base32: VX5PZY5ZUT7LS6X2GB443OGAD4NHB4VN, original: "http://www.nws.noaa.gov:80/geodata/catalog/wsom/data/bp10nv15.dbx"}
+        - {file: bp16jn16.dbx, role: archive_only, timestamp: "20170126013002", sha1_base32: 25Y3VA7FITE46US4VZMFSRCAAOTGTWTE, original: "http://www.nws.noaa.gov/geodata/catalog/wsom/data/bp16jn16.dbx"}
+        - {file: bp01nv16.dbx, role: archive_only, timestamp: "20171021171003", sha1_base32: GYUNEXVSIMHUHE2IDCC5VKDSDZHN6WWS, original: "http://www.nws.noaa.gov:80/geodata/catalog/wsom/data/bp01nv16.dbx"}
+        - {file: bp04ap17.dbx, role: archive_only, timestamp: "20171110173854", sha1_base32: GVCQBMGQ7W4MDW6RRQ33PZFYUH3HWLES, original: "http://www.nws.noaa.gov:80/geodata/catalog/wsom/data/bp04ap17.dbx"}
+        - {file: bp05mr24.dbx, role: fallback_for_nws_hosted, timestamp: "20251118124717", sha1_base32: 7W5BM4WAFKCIKHV2PBBJAWONSPGTKOOS, original: "https://www.weather.gov/source/gis/Shapefiles/County/bp05mr24.dbx"}
+        - {file: bp18mr25.dbx, role: fallback_for_nws_hosted, timestamp: "20251118130353", sha1_base32: BE4UNEMEC2FLGIQNWVGEDDFAXHEUF7N4, original: "https://www.weather.gov/source/gis/Shapefiles/County/bp18mr25.dbx"}
+        - {file: bp16ap26.dbx, role: fallback_for_nws_hosted, timestamp: "20260519150834", sha1_base32: 732SL6ZLGTCHSQP3NDJP72CPUVJQLWFY, original: "https://www.weather.gov/source/gis/Shapefiles/County/bp16ap26.dbx"}
+    health:
+      kind: nws_landing
+      fingerprint: "bca5af0570305aea"
+      fallbacks: [internet_archive_capture]
+
+  openfema:
+    provider: Federal Emergency Management Agency (FEMA) - OpenFEMA API
+    landing_page: https://www.fema.gov/about/openfema/data-sets
+    api_base: https://www.fema.gov/api/open
+    # Verified fallback: the same records as line-delimited bulk exports
+    # (<api_base>/<version>/<Dataset>.jsonl). Field names and values match the API (checked
+    # record-by-record on 2026-11-08), so snapshot hashes are identical whichever path is used.
+    bulk_format: jsonl
+    format: JSON (OData-style REST API; $top max 10000, $skip paging, $count for totals)
+    structure: semi-structured
+    page_size: 10000
+    allowed_hosts: [www.fema.gov]
+    terms: >-
+      Must state: "This product uses the Federal Emergency Management Agency's OpenFEMA API,
+      but is not endorsed by FEMA. The Federal Government or FEMA cannot vouch for the data or
+      analyses derived from these data after the data have been retrieved from the Agency's
+      website(s)." (https://www.fema.gov/about/openfema/terms-conditions)
+    health:
+      kind: openfema
+      fallbacks: [bulk_jsonl]
+    datasets:
+      DisasterDeclarationsSummaries:
+        version: v2
+        data_page: https://www.fema.gov/openfema-data-page/disaster-declarations-summaries-v2
+        state_field: state
+        date_field: incidentBeginDate
+        fingerprint: "30a5033288a03bea"
+        update_cadence: catalog accrualPeriodicity R/PT20M (every 20 minutes)
+      HmaSubapplications:
+        version: v2
+        data_page: https://www.fema.gov/openfema-data-page/hma-subapplications-v2
+        state_field: subapplicantStateAbbreviation
+        year_field: fiscalYear
+        fingerprint: "2077b207d17cd0e1"
+        update_cadence: catalog accrualPeriodicity R/P1D (daily); dataset lastRefresh 2026-07-27
+      DeclarationDenials:
+        version: v1
+        data_page: https://www.fema.gov/openfema-data-page/declaration-denials-v1
+        state_field: stateAbbreviation
+        date_field: declarationRequestDate
+        fingerprint: "c957f0284494240c"
+        update_cadence: catalog accrualPeriodicity R/P1D (daily)
+
+  cdc_svi:
+    provider: CDC / ATSDR Geospatial Research, Analysis, and Services Program (GRASP)
+    title: CDC/ATSDR Social Vulnerability Index 2022 - U.S. counties (national ranking)
+    landing_page: https://www.atsdr.cdc.gov/place-health/php/svi/svi-data-documentation-download.html
+    documentation: https://www.atsdr.cdc.gov/place-health/media/pdfs/2024/10/SVI2022Documentation.pdf
+    url: https://svi.cdc.gov/Documents/Data/2022/csv/states_counties/SVI_2022_US_county.csv
+    partition: release=2022
+    encoding: utf-8-sig
+    format: csv
+    structure: structured
+    raw_table: raw.cdc_svi_county
+    missing_value_sentinel: "-999"
+    allowed_hosts: [svi.cdc.gov]
+    terms: >-
+      U.S. federal government data; CDC/ATSDR publishes a suggested citation on the download page.
+    update_cadence: Biennial releases (2022 is the latest listed as of 2026-11-08).
+    health: {kind: csv_header, fingerprint: "5e0a192d79f3bace", fallbacks: []}
+
+  cdc_svi_pr:
+    provider: CDC / ATSDR GRASP
+    title: CDC/ATSDR SVI 2022 - Puerto Rico municipios (stand-alone Puerto Rico ranking)
+    landing_page: https://svi.cdc.gov/dataDownloads/data-download.html
+    documentation: https://www.atsdr.cdc.gov/place-health/media/pdfs/2024/10/SVI2022Documentation.pdf
+    # From the documentation: "a stand-alone, state-specific Commonwealth of Puerto Rico database.
+    # Puerto Rico is not included in the U.S.-wide ranking." The download tool lists Puerto Rico
+    # as the only territory. Scores are therefore NOT comparable with national percentiles.
+    url: https://svi.cdc.gov/Documents/Data/2022/csv/states_counties/PuertoRico_county.csv
+    partition: release=2022-puerto-rico
+    encoding: utf-8-sig
+    format: csv (same 158 columns as the U.S. file)
+    structure: structured
+    raw_table: raw.cdc_svi_county
+    allowed_hosts: [svi.cdc.gov]
+    terms: U.S. federal government data; cite CDC/ATSDR SVI.
+    update_cadence: Released with each SVI edition.
+    health: {kind: csv_header, fingerprint: "5e0a192d79f3bace", fallbacks: []}
+
+  census_popest:
+    provider: U.S. Census Bureau - Population Estimates Program
+    title: County population totals, Vintage 2025 (CO-EST2025-alldata)
+    landing_page: https://www.census.gov/data/tables/time-series/demo/popest/2020s-counties-total.html
+    url: https://www2.census.gov/programs-surveys/popest/datasets/2020-2025/counties/totals/co-est2025-alldata.csv
+    partition: vintage=2025
+    encoding: latin-1
+    format: csv (latin-1)
+    structure: structured
+    raw_table: raw.census_popest_county
+    allowed_hosts: [www2.census.gov]
+    terms: U.S. federal government data (public domain); cite the Census Bureau.
+    update_cadence: Annual vintage (Vintage 2025 released March 2026).
+    health: {kind: csv_header, fingerprint: "1438e1657864f061", fallbacks: []}
+
+  census_popest_pr:
+    provider: U.S. Census Bureau - Population Estimates Program
+    title: Puerto Rico municipio population estimates, Vintage 2025 (CC-EST2025-AGESEX-72)
+    landing_page: https://www2.census.gov/programs-surveys/popest/datasets/2020-2025/puerto-rico/asrh/
+    layout: https://www2.census.gov/programs-surveys/popest/technical-documentation/file-layouts/2020-2025/CC-EST2025-AGESEX.pdf
+    # YEAR key (layout): 1 = 4/1/2020 base, 2..7 = 7/1/2020..7/1/2025. The file uses columns
+    # MUNICIPIO/NAME where the layout documents COUNTY/CTYNAME.
+    url: https://www2.census.gov/programs-surveys/popest/datasets/2020-2025/puerto-rico/asrh/cc-est2025-agesex-72.csv
+    partition: vintage=2025
+    encoding: latin-1
+    format: csv (latin-1)
+    structure: structured
+    raw_table: raw.census_popest_pr_municipio
+    allowed_hosts: [www2.census.gov]
+    terms: U.S. federal government data (public domain); cite the Census Bureau.
+    update_cadence: Annual vintage (release date June 2026 per the layout).
+    health: {kind: csv_header, fingerprint: "4878a2e3ea8cf618", fallbacks: []}
+
+  census_county_reference:
+    provider: U.S. Census Bureau - Geography Division
+    title: 2020 national county FIPS reference file
+    landing_page: https://www.census.gov/library/reference/code-lists/ansi.html
+    url: https://www2.census.gov/geo/docs/reference/codes2020/national_county2020.txt
+    partition: reference=2020
+    encoding: utf-8-sig
+    format: pipe-delimited text with header
+    delimiter: "|"
+    structure: structured (reference)
+    raw_table: raw.census_county_reference
+    allowed_hosts: [www2.census.gov]
+    terms: U.S. federal government data (public domain).
+    update_cadence: Decennial reference (2020 vintage; includes pre-2022 Connecticut counties).
+    health: {kind: csv_header, fingerprint: "f72ffd82b86cb4d7", fallbacks: []}
+
+  bls_cpi:
+    provider: U.S. Bureau of Labor Statistics (BLS)
+    title: CPI-U, U.S. city average, all items, not seasonally adjusted (series CUUR0000SA0)
+    landing_page: https://data.bls.gov/timeseries/CUUR0000SA0
+    api_url: https://api.bls.gov/publicAPI/v1/timeseries/data/
+    series_id: CUUR0000SA0
+    # API v1 needs no registration: 25 queries/day, 10 years and 25 series per query
+    # (https://www.bls.gov/developers/api_faqs.htm). A 2000-2025 load uses 4 queries (1990s-2020s:
+    # fiscal year 2000 starts in October 1999); the sample and fixture profiles use 1.
+    max_years_per_query: 10
+    raw_table: raw.bls_cpi_records
+    format: JSON (BLS Public Data API v1)
+    structure: semi-structured
+    allowed_hosts: [api.bls.gov]
+    terms: >-
+      BLS material is in the public domain; cite the Bureau of Labor Statistics and the retrieval
+      date, and state: "BLS.gov cannot vouch for the data or analyses derived from these data
+      after the data have been retrieved from BLS.gov." (https://www.bls.gov/developers/termsOfService.htm)
+    update_cadence: Monthly CPI release; October 2025 is missing ("Data unavailable due to the 2025 lapse in appropriations").
+    health:
+      kind: bls_api
+      fingerprint: "d8dbf8d3175c7ea9"
+      # No independent keyless fallback: the BLS flat files (download.bls.gov) return HTTP 403 to
+      # clients that do not send personal contact details, and API v2 requires a personal key.
+      fallbacks: []

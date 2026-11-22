@@ -1,0 +1,36 @@
+# Run profiles. "sample" is the default for demos and smoke tests: bounded, fast, still real data.
+profiles:
+  sample:
+    description: Mid-Atlantic states, 2022-2024. About 60 MB of downloads (measured 2026-11-08).
+    start_year: 2022
+    end_year: 2024
+    states: [PA, OH, WV, NY, NJ, MD, DE, VA]
+  fixture:
+    description: Offline test profile - Pennsylvania, Puerto Rico and the U.S. Virgin Islands, 2024,
+      read from tests/fixtures (real excerpts; exercises all three SVI/population universes).
+    start_year: 2024
+    end_year: 2024
+    states: [PA, PR, VI]
+  full:
+    description: All states and territories, 2000-2025. About 300 MB of downloads (NOAA 258 MB).
+    start_year: 2000
+    end_year: 2025
+    states: null
+
+# Analysis parameters shared by all profiles.
+analysis:
+  # A storm event-county pair is "significant" if it meets either threshold. The damage threshold
+  # is compared with county-allocated damage in constant base-year dollars (inflation.base_year).
+  significant_damage_real_usd: 100000
+  significant_casualties: 1
+  # Declarations whose incident window starts this many days before / ends this many days
+  # after a storm event still count as covering it. Open-ended incidents get the cap below.
+  match_window_days_before: 1
+  match_window_days_after: 1
+  open_incident_cap_days: 60
+  # Constant-dollar measures: nominal USD x CPI(base_year) / CPI(year of the amount).
+  # CPI = BLS CPI-U, U.S. city average, all items, NSA (CUUR0000SA0), annual average.
+  # Change base_year to restate every real-dollar column; nominal columns are always kept.
+  inflation:
+    base_year: 2025
+    series_id: CUUR0000SA0

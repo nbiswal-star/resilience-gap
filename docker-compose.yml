@@ -1,0 +1,53 @@
+# Local stack. `make up` starts PostgreSQL only (the default). Optional profiles:
+#   docker compose --profile s3 up -d        -> SeaweedFS, an S3-compatible object store
+#   docker compose --profile app run --rm pipeline resgap run   -> pipeline in a container
+name: resgap
+
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-resgap}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-resgap}
+      POSTGRES_DB: ${POSTGRES_DB:-resgap}
+    ports:
+      # loopback only: the database is not reachable from other machines on the network.
+      # Host port 5433 avoids clashing with a locally installed PostgreSQL.
+      - "127.0.0.1:5433:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-resgap} -d ${POSTGRES_DB:-resgap}"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  s3:
+    # S3-compatible object store for the "clean path to S3" (RESGAP_OBJECT_STORE=s3).
+    # The MinIO image is no longer published on Docker Hub (checked 2026-11-08), so SeaweedFS
+    # (Apache-2.0) is used instead. Point RESGAP_S3_ENDPOINT_URL at http://localhost:8333.
+    profiles: ["s3"]
+    image: chrislusf/seaweedfs:4.52
+    command: "server -dir=/data -s3 -s3.port=8333"
+    ports:
+      - "127.0.0.1:8333:8333"   # loopback only
+    volumes:
+      - s3data:/data
+
+  pipeline:
+    profiles: ["app"]
+    build: .
+    environment:
+      RESGAP_DATABASE_URL: postgresql://${POSTGRES_USER:-resgap}:${POSTGRES_PASSWORD:-resgap}@db:5432/${POSTGRES_DB:-resgap}
+      RESGAP_PROFILE: ${RESGAP_PROFILE:-sample}
+      RESGAP_LAKE_DIR: /app/data/lake
+    volumes:
+      - ./data:/app/data
+      - ./reports:/app/reports
+    depends_on:
+      db:
+        condition: service_healthy
+
+volumes:
+  pgdata:
+  s3data:
