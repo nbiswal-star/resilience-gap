@@ -25,6 +25,11 @@ build-backend = "hatchling.build"
 [tool.hatch.build.targets.wheel]
 packages = ["src/resgap"]
 
+[tool.uv]
+# cryptography (a moto dependency) stopped publishing Intel-macOS wheels at 49.0; keep Intel Macs
+# on the last release with a wheel so `make setup` needs no Rust toolchain. Other platforms unchanged.
+constraint-dependencies = ["cryptography<49 ; sys_platform == 'darwin' and platform_machine == 'x86_64'"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 markers = [

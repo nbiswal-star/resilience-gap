@@ -1,0 +1,1492 @@
+# Data-quality checks. Each `sql` must return exactly one row: (failing_rows, total_rows).
+# status = pass  if failing_rows / total_rows <= max_fail_ratio
+#        = fail  otherwise, when severity = critical  -> the pipeline stops (non-zero exit)
+#        = warn  otherwise, when severity = warn/info -> logged, documented, pipeline continues
+# `handling` records the decision taken for that issue (shown in the report and docs).
+checks:
+
+  # ---------------- raw layer ----------------
+  - name: raw_storm_events_present
+    layer: raw
+    severity: critical
+    description: Every year in the active profile has Storm Events rows in raw.
+    handling: Fail the run; a missing year would silently understate losses.
+    sql: |
+      select count(*) filter (where n = 0), count(*)
+      from (select y, (select count(*) from raw.noaa_storm_events_details r
+                       where r._partition_key = 'year=' || y) n
+            from ops.active_profile p, generate_series(p.start_year, p.end_year) y) t
+
+  - name: raw_openfema_datasets_present
+    layer: raw
+    severity: critical
+    description: All three OpenFEMA datasets have at least one record in raw.
+    handling: Fail the run.
+    sql: |
+      select count(*) filter (where n = 0), count(*)
+      from (select d, (select count(*) from raw.openfema_records r where r.dataset = d) n
+            from unnest(array['DisasterDeclarationsSummaries','HmaSubapplications',
+                              'DeclarationDenials']) d) t
+
+  - name: raw_reference_tables_present
+    layer: raw
+    severity: critical
+    description: SVI, population (incl. Puerto Rico), county reference, zone crosswalk and CPI tables are populated.
+    handling: Fail the run.
+    sql: |
+      select (select count(*) = 0 from raw.cdc_svi_county)::int
+           + (select count(*) = 0 from raw.census_popest_county)::int
+           + (select count(*) = 0 from raw.census_popest_pr_municipio)::int
+           + (select count(*) = 0 from raw.census_county_reference)::int
+           + (select count(*) = 0 from raw.nws_zone_county)::int
+           + (select count(*) = 0 from raw.bls_cpi_records)::int, 6
+
+  - name: raw_rejected_rows
+    layer: raw
+    severity: warn
+    max_fail_ratio: 0.001
+    description: Source rows whose field count did not match the header (kept in ops.raw_rejects).
+    handling: Rows are preserved in ops.raw_rejects for inspection, not loaded to raw tables.
+    sql: |
+      select coalesce(sum(rows_rejected), 0), coalesce(sum(rows_loaded + rows_rejected), 0)
+      from ops.raw_loads
+
+  - name: raw_storm_event_id_missing
+    layer: raw
+    severity: critical
+    description: EVENT_ID (the source primary key) is blank or non-numeric.
+    handling: Fail; EVENT_ID is required for de-duplication and lineage.
+    sql: |
+      select count(*) filter (where staging.try_int(event_id) is null), count(*)
+      from raw.noaa_storm_events_details
+
+  - name: raw_svi_row_count
+    layer: raw
+    severity: warn
+    description: The U.S. SVI 2022 county file has the documented ~3,144 counties and the Puerto Rico file 78 municipios (not checked for the fixture excerpts).
+    handling: Warn; investigate if the release changed.
+    sql: |
+      select ((select count(*) from raw.cdc_svi_county where _partition_key = 'release=2022')
+                not between 3100 and 3300
+              or (select count(*) from raw.cdc_svi_county
+                  where _partition_key = 'release=2022-puerto-rico') <> 78)::int
+             * ((select profile from ops.active_profile) <> 'fixture')::int, 1
+
+  # ---------------- staging layer ----------------
+  - name: storm_events_duplicate_event_ids
+    layer: staging
+    severity: info
+    max_fail_ratio: 1
+    description: Raw rows sharing an EVENT_ID (removed in staging, latest load kept).
+    handling: De-duplicated with DISTINCT ON (event_id) ordered by load time.
+    sql: |
+      select (select count(*) from raw.noaa_storm_events_details
+              where staging.try_int(event_id) is not null) - (select count(*) from staging.storm_events),
+             (select count(*) from raw.noaa_storm_events_details)
+
+  - name: storm_damage_unparseable
+    layer: staging
+    severity: warn
+    max_fail_ratio: 0.001
+    description: Damage strings present but not in the documented K/M/B format.
+    handling: Set to NULL (not 0) and excluded from sums; listed in the sample column.
+    sql: |
+      select count(*) filter (where (damage_property_raw is not null and damage_property_usd is null)
+                               or (damage_crops_raw is not null and damage_crops_usd is null)),
+             count(*)
+      from staging.storm_events
+    sample_sql: |
+      select event_id, damage_property_raw, damage_crops_raw from staging.storm_events
+      where (damage_property_raw is not null and damage_property_usd is null)
+         or (damage_crops_raw is not null and damage_crops_usd is null) limit 10
+
+  - name: storm_damage_not_reported
+    layer: staging
+    severity: info
+    max_fail_ratio: 1
+    description: Events with both damage fields blank (NOAA did not report an estimate).
+    handling: Treated as unknown, contribute 0 to sums; flagged damage_not_reported in facts.
+    sql: |
+      select count(*) filter (where damage_property_raw is null and damage_crops_raw is null), count(*)
+      from staging.storm_events
+
+  - name: storm_events_invalid_begin_time
+    layer: staging
+    severity: warn
+    max_fail_ratio: 0.001
+    description: BEGIN_YEARMONTH/DAY/TIME do not form a valid timestamp.
+    handling: Event kept in staging with NULL begin time; excluded from dated facts.
+    sql: select count(*) filter (where begin_local is null), count(*) from staging.storm_events
+
+  - name: storm_events_end_before_begin
+    layer: staging
+    severity: warn
+    max_fail_ratio: 0.001
+    description: Event end timestamp earlier than begin timestamp.
+    handling: Kept; analyses use the begin date only.
+    sql: |
+      select count(*) filter (where end_local < begin_local), count(*) from staging.storm_events
+
+  - name: zone_events_unmapped
+    layer: staging
+    severity: warn
+    max_fail_ratio: 0.05
+    description: Zone-based land events with no county mapping under the date-effective rules (all loaded years).
+    handling: Kept in staging with an unmapped_reason; never guessed; excluded from county facts. Rates by year in serving.zone_mapping_coverage.
+    sql: |
+      select count(*) filter (where match_method is null), count(*)
+      from staging.storm_event_zone_resolution
+    sample_sql: |
+      select extract(year from event_date)::int as year, unmapped_reason, count(*) as events
+      from staging.storm_event_zone_resolution where match_method is null
+      group by 1, 2 order by 1, 2
+
+  - name: zone_mapping_date_effective
+    layer: staging
+    severity: critical
+    description: Every zone_effective_snapshot / zone_gap match uses the crosswalk version valid on the event date.
+    handling: Fail the run (would mean the date-effective join is broken).
+    sql: |
+      select count(*) filter (where r.event_date not between s.effective_date and s.valid_to), count(*)
+      from staging.storm_event_zone_resolution r
+      join staging.nws_zone_snapshot s using (snapshot_file)
+      where r.match_method in ('zone_effective_snapshot', 'zone_gap_snapshot_name_verified')
+
+  - name: zone_mapping_single_version
+    layer: staging
+    severity: critical
+    description: All counties of one zone event come from a single crosswalk version.
+    handling: Fail the run.
+    sql: |
+      select count(*) filter (where n > 1), count(*)
+      from (select event_id, count(distinct snapshot_file) n from staging.storm_event_county
+            where snapshot_file is not null group by event_id) t
+
+  - name: zone_mapping_name_verified_where_required
+    layer: staging
+    severity: critical
+    description: Gap-period and nearest-version matches always have an agreeing zone name in the chosen version (a few 2004-2008 versions name one zone differently on different county rows).
+    handling: Fail the run.
+    sql: |
+      select count(*) filter (where not exists (
+               select 1 from staging.nws_zone_county_version v
+               where v.snapshot_file = r.snapshot_file and v.state_zone = r.state_zone
+                 and v.zone_name_key = staging.zone_name_key(r.cz_name))),
+             count(*)
+      from staging.storm_event_zone_resolution r
+      where r.match_method in ('zone_gap_snapshot_name_verified', 'zone_nearest_snapshot_name_verified')
+
+  - name: zone_effective_name_differs
+    layer: staging
+    severity: info
+    max_fail_ratio: 1
+    description: In-effect version matches whose zone name differs from the Storm Events CZ_NAME (accepted, because the version in effect is authoritative for that date).
+    handling: Reported only; inspect the sample if the share grows.
+    sql: |
+      select count(*) filter (where not in_effect_name_match), count(*)
+      from staging.storm_event_zone_resolution where match_method = 'zone_effective_snapshot'
+    sample_sql: |
+      select r.state_zone, r.cz_name, v.zone_name, r.snapshot_file, count(*) n
+      from staging.storm_event_zone_resolution r
+      join (select distinct snapshot_file, state_zone, zone_name from staging.nws_zone_county_version) v
+        using (snapshot_file, state_zone)
+      where r.match_method = 'zone_effective_snapshot' and not r.in_effect_name_match
+      group by 1, 2, 3, 4 order by n desc limit 10
+
+  - name: zone_mapped_via_archive_versions
+    layer: staging
+    severity: info
+    max_fail_ratio: 1
+    description: Zone events mapped with a crosswalk version whose bytes come from the Internet Archive (pre-2020 NWS files no longer on NWS servers).
+    handling: Reported for transparency; each archive file was verified against the archive's SHA-1 digest.
+    sql: |
+      select count(distinct event_id) filter (where crosswalk_tier = 'internet_archive'),
+             count(distinct event_id) filter (where snapshot_file is not null)
+      from staging.storm_event_county
+
+  - name: storm_events_marine_excluded
+    layer: staging
+    severity: info
+    max_fail_ratio: 1
+    description: Marine events (CZ_TYPE = M, or marine/Great Lakes pseudo-states STATE_FIPS 81-95) have no county.
+    handling: Excluded from county analysis by design.
+    sql: |
+      select count(*) filter (where cz_type = 'M' or is_marine_area), count(*) from staging.storm_events
+
+  - name: storm_county_fips_not_in_reference
+    layer: staging
+    severity: warn
+    max_fail_ratio: 0.01
+    description: Resolved county FIPS codes that are not in the Census county reference.
+    handling: Dropped from county facts (cannot be joined to population/SVI).
+    sql: |
+      select count(*) filter (where c.county_fips is null), count(*)
+      from staging.storm_event_county b left join staging.county_ref c using (county_fips)
+    sample_sql: |
+      select b.county_fips, count(*) n from staging.storm_event_county b
+      left join staging.county_ref c using (county_fips)
+      where c.county_fips is null group by 1 order by n desc limit 10
+
+  - name: declarations_statewide_only_when_literal
+    layer: staging
+    severity: critical
+    description: A declared area is 'statewide' if and only if its OpenFEMA designatedArea is literally "Statewide" (fipsCountyCode '000' alone is NOT statewide; most code-000 rows are tribal areas).
+    handling: Fail the run; treating a reservation as a statewide designation would mark every county of the state as covered.
+    sql: |
+      select count(*) filter (where (area_level = 'statewide')
+                                    <> staging.is_statewide_designation(designated_area)),
+             count(*)
+      from staging.fema_declarations
+    sample_sql: |
+      select disaster_number, state_abbr, designated_area, fips_county_code, area_level
+      from staging.fema_declarations
+      where (area_level = 'statewide') <> staging.is_statewide_designation(designated_area)
+      limit 10
+
+  - name: declarations_non_county_areas_not_expanded
+    layer: curated
+    severity: critical
+    description: Only 'county' declared areas carry a county FIPS; statewide, tribal and unresolved areas are never assigned to (or expanded into) counties.
+    handling: Fail the run.
+    sql: |
+      select (select count(*) filter (where (area_level = 'county') <> (county_fips is not null))
+              from staging.fema_declarations)
+           + (select count(*) filter (where (area_level = 'county') <> (county_fips is not null))
+              from curated.fact_declaration_area),
+             (select count(*) from staging.fema_declarations)
+           + (select count(*) from curated.fact_declaration_area)
+
+  - name: declarations_tribal_areas
+    layer: staging
+    severity: info
+    max_fail_ratio: 1
+    description: Declared areas that are tribal areas (reservations, tribal statistical areas, Alaska Native villages; mostly fipsCountyCode '000').
+    handling: Kept as area_level = 'tribal' with their designatedArea text; not counted as county or statewide designations; reported in serving.declaration_timeliness (tribal_areas_designated).
+    sql: |
+      select count(*) filter (where area_level = 'tribal'), count(*) from staging.fema_declarations
+    sample_sql: |
+      select designated_area, count(*) n from staging.fema_declarations
+      where area_level = 'tribal' group by 1 order by n desc limit 10
+
+  - name: declarations_code000_unclassified
+    layer: staging
+    severity: warn
+    max_fail_ratio: 0
+    description: fipsCountyCode '000' rows that are neither literally "Statewide" nor identifiable as a tribal area (no placeCode, no tribal request).
+    handling: Kept as 'unresolved' (never statewide); review the sample and extend staging.fema_area_level deliberately.
+    sql: |
+      select count(*) filter (where fips_county_code = '000' and area_level = 'unresolved'),
+             count(*) filter (where fips_county_code = '000')
+      from staging.fema_declarations
+    sample_sql: |
+      select disaster_number, state_abbr, designated_area, place_code from staging.fema_declarations
+      where fips_county_code = '000' and area_level = 'unresolved' limit 10
+
+  - name: fema_region_matches_source
+    layer: staging
+    severity: critical
+    description: The FEMA region seed (seeds/fema_regions.csv) agrees with the region field of every OpenFEMA declaration and denial record.
+    handling: Fail the run; region breakdowns (Q2, Q4) would otherwise be wrong. Update the seed deliberately if FEMA changes its regions.
+    sql: |
+      select count(*) filter (where r.fema_region is null or r.fema_region::int <> x.fema_region),
+             count(*)
+      from (select state_abbr, fema_region from staging.fema_declarations
+            union all
+            select state_abbr, fema_region from staging.fema_declaration_denials) x
+      left join staging.seed_fema_regions r using (state_abbr)
+    sample_sql: |
+      select x.state_abbr, x.fema_region, r.fema_region as seed_region, count(*) n
+      from (select state_abbr, fema_region from staging.fema_declarations
+            union all
+            select state_abbr, fema_region from staging.fema_declaration_denials) x
+      left join staging.seed_fema_regions r using (state_abbr)
+      where r.fema_region is null or r.fema_region::int <> x.fema_region
+      group by 1, 2, 3 limit 10
+
+  - name: declarations_unresolved_area
+    layer: staging
+    severity: warn
+    max_fail_ratio: 0.05
+    description: Declared areas that are neither a known county, a literal statewide designation, nor a tribal area.
+    handling: Kept with area_level = 'unresolved'; excluded from county joins.
+    sql: |
+      select count(*) filter (where area_level = 'unresolved'), count(*) from staging.fema_declarations
+    sample_sql: |
+      select state_abbr, designated_area, fips_state_code, fips_county_code, count(*) n
+      from staging.fema_declarations where area_level = 'unresolved'
+      group by 1,2,3,4 order by n desc limit 10
+
+  - name: declarations_non_weather
+    layer: staging
+    severity: info
+    max_fail_ratio: 1
+    description: Declarations for non-weather incidents (e.g. COVID-19 "Biological", earthquakes).
+    handling: Kept in curated facts but excluded from all weather-gap measures (is_weather = false).
+    sql: |
+      select count(*) filter (where coalesce(h.is_weather::boolean, false) = false), count(*)
+      from staging.fema_declarations f
+      left join staging.seed_hazard_crosswalk h on h.source = 'fema' and h.source_value = f.incident_type
+
+  - name: hma_unresolved_county_names
+    layer: staging
+    severity: warn
+    max_fail_ratio: 0.05
+    description: HMA benefitingCounties entries that match no county name anywhere (after name-key normalisation and aliases).
+    handling: Kept with area_level = 'unresolved'; money stays in state totals, not county totals.
+    sql: |
+      select count(*) filter (where area_level = 'unresolved'),
+             count(*) filter (where area_level in ('county', 'unresolved', 'out_of_state'))
+      from staging.hma_county_bridge
+    sample_sql: |
+      select state_abbr, raw_name, count(*) n from staging.hma_county_bridge
+      where area_level = 'unresolved' group by 1,2 order by n desc limit 15
+
+  - name: hma_out_of_state_county_names
+    layer: staging
+    severity: info
+    max_fail_ratio: 1
+    description: HMA entries naming a county that exists only outside the applicant's state (multi-state subapplications).
+    handling: Not guessed (names like SALINE exist in several states); area_level = 'out_of_state', counted at state level only.
+    sql: |
+      select count(*) filter (where area_level = 'out_of_state'),
+             count(*) filter (where area_level in ('county', 'unresolved', 'out_of_state'))
+      from staging.hma_county_bridge
+    sample_sql: |
+      select state_abbr, raw_name, count(*) n from staging.hma_county_bridge
+      where area_level = 'out_of_state' group by 1,2 order by n desc limit 15
+
+  - name: hma_no_benefiting_county
+    layer: staging
+    severity: info
+    max_fail_ratio: 1
+    description: HMA subapplications with no benefitingCounties value.
+    handling: One 'unspecified' bridge row; counted at state level only.
+    sql: |
+      select count(*) filter (where benefiting_counties is null), count(*) from staging.hma_subapplications
+
+  - name: hma_allocation_reconciles
+    layer: staging
+    severity: critical
+    description: Allocation weights per HMA subapplication sum to 1 (money is neither lost nor duplicated).
+    handling: Fail the run.
+    sql: |
+      select count(*) filter (where abs(w - 1) > 1e-9), count(*)
+      from (select hma_id, sum(allocation_weight) w from staging.hma_county_bridge group by 1) t
+
+  - name: storm_allocation_reconciles
+    layer: staging
+    severity: critical
+    description: Allocation weights per storm event sum to 1.
+    handling: Fail the run.
+    sql: |
+      select count(*) filter (where abs(w - 1) > 1e-9), count(*)
+      from (select event_id, sum(allocation_weight) w from staging.storm_event_county group by 1) t
+
+  - name: county_name_key_ambiguous
+    layer: staging
+    severity: warn
+    description: Two current counties in one state share a name key (would make name matching ambiguous).
+    handling: Matching picks the lowest FIPS; reviewed manually if this ever fails.
+    sql: |
+      select count(*) filter (where n > 1), count(*)
+      from (select state_abbr, name_key, count(*) n from staging.county_ref
+            where in_popest_2025 group by 1, 2) t
+
+  - name: svi_missing_values
+    layer: staging
+    severity: info
+    max_fail_ratio: 1
+    description: SVI rows whose overall rank is missing (-999 sentinel or blank).
+    handling: Converted to NULL; the county gets svi_coverage = 'svi_missing'.
+    sql: select count(*) filter (where svi_overall is null), count(*) from staging.svi_county
+
+  - name: cpi_years_covered
+    layer: staging
+    severity: critical
+    description: A CPI annual average exists for the base year and every profile year, and a fiscal-year CPI for every profile fiscal year.
+    handling: Fail the run; constant-dollar measures would otherwise be NULL.
+    sql: |
+      select count(*) filter (where cpi is null), count(*) from (
+        select y, (select cpi from staging.cpi_annual a where a.year = y) as cpi
+        from ops.active_profile p,
+             generate_series(least(p.start_year, p.cpi_base_year), greatest(p.end_year, p.cpi_base_year)) y
+        union all
+        select y, (select cpi from staging.cpi_fiscal_year f where f.fy = y)
+        from ops.active_profile p, generate_series(p.start_year, p.end_year) y
+      ) t
+
+  - name: cpi_published_vs_computed
+    layer: staging
+    severity: warn
+    max_fail_ratio: 0
+    description: Where BLS returned its annual average (M13) and all 12 months exist, the two agree within rounding (0.05 %).
+    handling: Warn; the published value is used.
+    sql: |
+      select count(*) filter (where abs(published_annual_avg - computed_annual_avg)
+                                    > 0.0005 * published_annual_avg),
+             count(*)
+      from staging.cpi_annual
+      where published_annual_avg is not null and computed_annual_avg is not null
+
+  - name: cpi_months_not_published
+    layer: staging
+    severity: info
+    max_fail_ratio: 1
+    description: Monthly CPI values BLS did not publish (e.g. October 2025, lapse in appropriations).
+    handling: Kept as NULL; a year without all 12 months uses the BLS annual average if published, otherwise stays NULL.
+    sql: select count(*) filter (where index_value is null), count(*) from staging.cpi_monthly
+    sample_sql: |
+      select year, month, value_raw from staging.cpi_monthly where index_value is null order by 1, 2
+
+  - name: seed_unmapped_hazard_values
+    layer: staging
+    severity: warn
+    description: Hazard/incident values in the data (NOAA event types, FEMA declaration and denial incident types, HMA hazards) that the crosswalk seed does not map.
+    handling: Mapped to 'Unmapped'; extend seeds/hazard_crosswalk.csv deliberately.
+    sql: |
+      select count(*), greatest(count(*), 1) from (
+        select 'noaa' s, event_type v from staging.storm_events
+        union select 'fema', incident_type from staging.fema_declarations
+        union select 'fema', requested_incident_types from staging.fema_declaration_denials
+        union select 'hma', primary_hazard from staging.hma_subapplications where primary_hazard is not null
+      ) x
+      where not exists (select 1 from staging.seed_hazard_crosswalk h
+                        where h.source = x.s and h.source_value = x.v)
+    sample_sql: |
+      select * from (
+        select 'noaa' s, event_type v from staging.storm_events
+        union select 'fema', incident_type from staging.fema_declarations
+        union select 'fema', requested_incident_types from staging.fema_declaration_denials
+        union select 'hma', primary_hazard from staging.hma_subapplications where primary_hazard is not null
+      ) x where not exists (select 1 from staging.seed_hazard_crosswalk h
+                            where h.source = x.s and h.source_value = x.v) limit 20
+
+  # ---------------- curated / serving ----------------
+  - name: curated_negative_storm_damage
+    layer: curated
+    severity: critical
+    description: Negative storm damage after parsing (impossible by construction of the parser).
+    handling: Fail the run.
+    sql: |
+      select count(*) filter (where damage_total_usd < 0 or deaths < 0 or injuries < 0), count(*)
+      from curated.fact_storm_event_county
+
+  - name: curated_negative_hma_obligations
+    layer: curated
+    severity: warn
+    max_fail_ratio: 0.01
+    description: HMA subapplications with a negative totalObligatedAmount (source values; mostly closed HMGP awards - consistent with de-obligation adjustments).
+    handling: Kept as reported (obligation_amount_class = 'negative'); excluded from recorded-obligation totals and from the positive-obligation stage, which require an amount > 0.
+    sql: |
+      select count(*) filter (where total_obligated_usd < 0), count(*)
+      from staging.hma_subapplications
+    sample_sql: |
+      select state_abbr, program, status, subapplication_type, total_obligated_usd
+      from staging.hma_subapplications where total_obligated_usd < 0
+      order by total_obligated_usd limit 10
+
+  - name: curated_counties_without_population
+    layer: serving
+    severity: warn
+    description: Counties in the per-capita universes (states_dc, puerto_rico) with no population.
+    handling: Investigate; island areas and legacy geography are expected to have none.
+    sql: |
+      select count(*) filter (where population_base is null), count(*)
+      from serving.county_resilience_profile
+      where analysis_universe in ('states_dc', 'puerto_rico')
+    sample_sql: |
+      select county_fips, county_name, state_abbr, analysis_universe
+      from serving.county_resilience_profile
+      where population_base is null and analysis_universe in ('states_dc', 'puerto_rico') limit 10
+
+  - name: svi_universe_separation
+    layer: curated
+    severity: critical
+    description: National SVI percentiles/quartiles appear only for states + DC; Puerto Rico carries only its within-PR rank; island areas and legacy geography carry no SVI.
+    handling: Fail the run (scores from different ranking universes must never be mixed).
+    sql: |
+      select count(*) filter (where
+               (analysis_universe <> 'states_dc' and (svi_overall is not null or svi_quartile is not null))
+            or (analysis_universe <> 'puerto_rico' and svi_pr_within_rank is not null)
+            or (analysis_universe in ('island_areas', 'legacy_geography')
+                and svi_coverage not like 'no_svi%')),
+             count(*)
+      from curated.dim_county
+
+  - name: real_dollars_reconcile
+    layer: curated
+    severity: critical
+    description: Constant-dollar amounts equal nominal x CPI factor, every in-scope amount has a factor, and the base year's factor is exactly 1.
+    handling: Fail the run.
+    sql: |
+      select (select count(*) from curated.fact_storm_event_county
+              where cpi_factor_to_base is null
+                 or abs(damage_total_real_usd - damage_total_usd * cpi_factor_to_base) > 0.01)
+           + (select count(*) from curated.fact_hma_allocation
+              where cpi_factor_to_base is null
+                 or abs(obligated_real_usd - obligated_usd * cpi_factor_to_base) > 0.01)
+           + (select count(*) from curated.dim_inflation
+              where period_type = 'calendar_year' and period = base_year and factor_to_base <> 1),
+             (select count(*) from curated.fact_storm_event_county)
+           + (select count(*) from curated.fact_hma_allocation) + 1
+
+  - name: serving_expected_counties_without_population
+    layer: serving
+    severity: info
+    max_fail_ratio: 1
+    description: Island areas (no SVI and no Census county population published) and the 8 legacy Connecticut counties.
+    handling: Totals are kept; per-capita and SVI measures are NULL; these areas are reported as their own universes.
+    sql: |
+      select count(*) filter (where population_base is null), count(*)
+      from serving.county_resilience_profile
+
+  - name: serving_profile_not_empty
+    layer: serving
+    severity: critical
+    description: The county serving table has rows for the active profile.
+    handling: Fail the run.
+    sql: select (count(*) = 0)::int, 1 from serving.county_resilience_profile
+
+  - name: serving_damage_reconciles
+    layer: serving
+    severity: critical
+    description: County-level damage in the serving table plus the weather damage withheld on current units of states whose county geography changed (current units of a state that also has legacy_geography units, derived here from analysis_universe and state, not from any comparability flag; nationally the CT planning regions, expected $0) equals the curated fact total exactly. Withheld damage that also appears in the profile would be double counted and fail.
+    handling: Fail the run. Damage is never lost silently; any amount withheld from county-level metrics is accounted for here and counted by history_facts_on_noncomparable_geography.
+    sql: |
+      with changed_current as (
+        select d.county_fips from curated.dim_county d
+        where d.analysis_universe <> 'legacy_geography'
+          and exists (select 1 from curated.dim_county l
+                      where l.state_fips = d.state_fips
+                        and l.analysis_universe = 'legacy_geography')
+      )
+      select (abs(coalesce((select sum(damage_total_usd) from serving.county_resilience_profile), 0)
+                + coalesce((select sum(f.damage_total_usd) from curated.fact_storm_event_county f
+                            join changed_current c using (county_fips)
+                            where f.is_weather), 0)
+                - coalesce((select sum(damage_total_usd) from curated.fact_storm_event_county
+                            where is_weather), 0)) > 1)::int, 1
+
+  - name: coverage_only_county_or_literal_statewide
+    layer: serving
+    severity: critical
+    description: Every covered event-county pair is matched to a DR that designates that county, or to a literal "Statewide" designation of its state, with a compatible hazard family (never via a tribal-area designation).
+    handling: Fail the run.
+    sql: |
+      select count(*) filter (where not exists (
+               select 1 from curated.fact_declaration_area d
+               join curated.dim_hazard_match m
+                 on m.declaration_hazard_family = d.hazard_family
+                and m.event_hazard_family = c.hazard_family
+               where d.disaster_number = c.matched_disaster_number
+                 and d.declaration_type = 'DR' and d.is_weather
+                 and ((c.matched_area_level = 'county' and d.area_level = 'county'
+                       and d.county_fips = c.county_fips)
+                   or (c.matched_area_level = 'statewide' and d.area_level = 'statewide'
+                       and d.state_abbr = c.state_abbr
+                       and staging.is_statewide_designation(d.designated_area))))),
+             count(*)
+      from serving.event_declaration_coverage c
+      where c.covered_by_major_disaster
+    sample_sql: |
+      select event_id, county_fips, hazard_family, matched_declaration, matched_area_level
+      from serving.event_declaration_coverage c
+      where covered_by_major_disaster and matched_area_level not in ('county', 'statewide')
+      limit 10
+
+  - name: coverage_significance_in_real_dollars
+    layer: serving
+    severity: critical
+    description: The Q2 table holds exactly the weather event-county pairs whose constant-dollar damage meets the threshold or that caused casualties.
+    handling: Fail the run.
+    sql: |
+      with expected as (
+        select f.event_id, f.county_fips
+        from curated.fact_storm_event_county f cross join ops.active_profile p
+        where f.is_weather and (f.damage_total_real_usd >= p.significant_damage_real_usd
+                                or f.event_casualties >= p.significant_casualties)
+      )
+      select (select count(*) from (select event_id, county_fips from expected
+                                    except select event_id, county_fips
+                                    from serving.event_declaration_coverage) a)
+           + (select count(*) from (select event_id, county_fips
+                                    from serving.event_declaration_coverage
+                                    except select event_id, county_fips from expected) b),
+             greatest((select count(*) from expected), 1)
+
+  - name: timeliness_breakdowns_reconcile
+    layer: serving
+    severity: critical
+    description: Each Q4 breakdown (SVI group, hazard family, FEMA region) partitions the same set of weather-related major disasters as serving.declaration_timeliness.
+    handling: Fail the run.
+    sql: |
+      select count(*) filter (where n <> (select count(*) from serving.declaration_timeliness)),
+             count(*)
+      from (select breakdown, sum(disasters) n from serving.declaration_timeliness_summary
+            group by breakdown) t
+
+  - name: timeliness_small_groups
+    layer: serving
+    severity: info
+    max_fail_ratio: 1
+    description: Q4 groups with fewer than 10 disasters (medians not comparable).
+    handling: Shown with sample_note in the report and dashboard; never ranked or compared.
+    sql: |
+      select count(*) filter (where disasters < 10), count(*)
+      from serving.declaration_timeliness_summary where breakdown <> 'all'
+
+  - name: timeliness_negative_lags
+    layer: serving
+    severity: warn
+    max_fail_ratio: 0.01
+    description: Major disasters whose declaration date precedes the incident start or the request date.
+    handling: Kept as recorded by FEMA; listed in the sample for review.
+    sql: |
+      select count(*) filter (where days_incident_to_declaration < 0
+                                 or days_request_to_declaration < 0), count(*)
+      from serving.declaration_timeliness
+    sample_sql: |
+      select fema_declaration_string, incident_begin_date, declaration_request_date, declaration_date
+      from serving.declaration_timeliness
+      where days_incident_to_declaration < 0 or days_request_to_declaration < 0 limit 10
+
+  - name: request_outcomes_reconcile
+    layer: serving
+    severity: critical
+    description: Declared and turned-down counts in serving.declaration_request_outcomes equal the weather-related declarations and denial records in the curated facts.
+    handling: Fail the run.
+    sql: |
+      select ((select coalesce(sum(turned_down), 0) from serving.declaration_request_outcomes)
+                <> (select count(*) from curated.fact_declaration_denial
+                    where is_weather and declaration_type in ('DR', 'EM')))::int
+           + ((select coalesce(sum(declared), 0) from serving.declaration_request_outcomes)
+                <> (select count(*) from (select distinct disaster_number, state_abbr,
+                      extract(year from incident_begin_date), declaration_type, hazard_family
+                    from curated.fact_declaration_area
+                    where is_weather and declaration_type in ('DR', 'EM')) d))::int,
+             2
+
+  # ---------------- HMA application / status / obligation funnel ----------------
+  # An HMA record is a subapplication that reached FEMA. Stages are not_observed,
+  # observed_no_positive_obligation and obligated; status is OpenFEMA's verbatim snapshot and is
+  # never recoded. Absence of a county-mapped record never means the county did not apply.
+  - name: hma_raw_status_preserved
+    layer: curated
+    severity: critical
+    description: The status of every HMA subapplication in staging equals the verbatim OpenFEMA status of a raw record with the same id, and every curated allocation row carries its subapplication's staging status unchanged.
+    handling: Fail the run; statuses are snapshots that must never be recoded (nothing may be relabelled "Approved" unless the source says "Approved").
+    sql: |
+      select (select count(*) from (
+                select s.hma_id
+                from staging.hma_subapplications s
+                join raw.openfema_records r
+                  on r.dataset = 'HmaSubapplications' and r.record->>'id' = s.hma_id
+                group by s.hma_id
+                having not bool_or((r.record->>'status') is not distinct from s.status)) a)
+           + (select count(*) from curated.fact_hma_allocation f
+              join staging.hma_subapplications s using (hma_id)
+              where f.status is distinct from s.status),
+             (select count(*) from staging.hma_subapplications)
+           + (select count(*) from curated.fact_hma_allocation)
+    sample_sql: |
+      select f.hma_id, f.status as curated_status, s.status as staging_status
+      from curated.fact_hma_allocation f join staging.hma_subapplications s using (hma_id)
+      where f.status is distinct from s.status limit 10
+
+  - name: hma_positive_obligation_matches_source
+    layer: curated
+    severity: critical
+    description: has_positive_obligation is true exactly when the source totalObligatedAmount is greater than 0, and obligation_amount_class matches the sign of that amount (NULL = not_reported). Checked against staging AND independently against the raw OpenFEMA JSON (text parsed here with a plain numeric cast, not the staging parser), and the county shares of every subapplication must add up to its raw amount.
+    handling: Fail the run; the obligated stage and every recorded-obligation total depend on this flag.
+    sql: |
+      with raw_amount as (  -- latest raw record per id, amount parsed independently of staging
+        select distinct on (record->>'id') record->>'id' as hma_id,
+               case when btrim(record->>'totalObligatedAmount')
+                           ~ '^-?([0-9]+\.?[0-9]*|\.[0-9]+)([eE][+-]?[0-9]+)?$'
+                    then btrim(record->>'totalObligatedAmount')::numeric end as amount
+        from raw.openfema_records
+        where dataset = 'HmaSubapplications'
+        order by record->>'id', _loaded_at desc
+      ),
+      sub as (
+        select hma_id, bool_and(has_positive_obligation) as all_pos,
+               bool_or(has_positive_obligation) as any_pos, sum(obligated_usd) as shares
+        from curated.fact_hma_allocation group by hma_id
+      )
+      select (select count(*) filter (where
+                f.has_positive_obligation <> coalesce(s.total_obligated_usd > 0, false)
+             or f.obligation_amount_class <> case when s.total_obligated_usd is null then 'not_reported'
+                                                  when s.total_obligated_usd > 0 then 'positive'
+                                                  when s.total_obligated_usd = 0 then 'zero'
+                                                  else 'negative' end)
+              from curated.fact_hma_allocation f join staging.hma_subapplications s using (hma_id))
+           + (select count(*) from sub left join raw_amount r using (hma_id)
+              where r.hma_id is null
+                 or sub.all_pos <> sub.any_pos
+                 or sub.any_pos <> coalesce(r.amount > 0, false)
+                 or abs(sub.shares - coalesce(r.amount, 0)) > 0.01),
+             (select count(*) from curated.fact_hma_allocation) + (select count(*) from sub)
+    sample_sql: |
+      select f.hma_id, f.has_positive_obligation, f.obligation_amount_class,
+             s.total_obligated_usd
+      from curated.fact_hma_allocation f join staging.hma_subapplications s using (hma_id)
+      where f.has_positive_obligation <> coalesce(s.total_obligated_usd > 0, false)
+      limit 10
+
+  - name: hma_period_boundaries
+    layer: curated
+    severity: critical
+    description: HMA periods are the fixed five-year fiscal-year periods (start year = 1 mod 5), contiguous, non-overlapping and clipped exactly to the profile years; every allocation row sits in the period that contains its fiscal year.
+    handling: Fail the run; period breakdowns would double count or drop fiscal years.
+    sql: |
+      select (select count(*) from curated.fact_hma_allocation f
+              left join curated.dim_hma_period p using (period_start_fy)
+              where p.period_start_fy is null
+                 or f.period_start_fy <> staging.hma_period_start(f.fiscal_year)
+                 or f.fiscal_year not between p.first_fy_in_profile and p.last_fy_in_profile)
+           + (select count(*) from curated.dim_hma_period
+              where period_start_fy % 5 <> 1
+                 or period_end_fy <> period_start_fy + 4
+                 or first_fy_in_profile < period_start_fy
+                 or last_fy_in_profile > period_end_fy
+                 or fiscal_years_in_period <> last_fy_in_profile - first_fy_in_profile + 1
+                 or is_partial_period <> (fiscal_years_in_period < 5))
+           + (select count(*) from (
+                select first_fy_in_profile,
+                       lag(last_fy_in_profile) over (order by period_start_fy) as previous_last
+                from curated.dim_hma_period) t
+              where previous_last is not null and first_fy_in_profile <> previous_last + 1)
+           + (select ((select min(first_fy_in_profile) from curated.dim_hma_period)
+                        is distinct from p.start_year
+                      or (select max(last_fy_in_profile) from curated.dim_hma_period)
+                        is distinct from p.end_year
+                      or coalesce((select sum(fiscal_years_in_period) from curated.dim_hma_period), 0)
+                        <> p.end_year - p.start_year + 1)::int
+              from ops.active_profile p),
+             (select count(*) from curated.fact_hma_allocation)
+           + (select count(*) from curated.dim_hma_period) + 1
+    sample_sql: |
+      select * from curated.dim_hma_period order by period_start_fy
+
+  - name: hma_positive_obligation_under_other_status
+    layer: curated
+    severity: info
+    max_fail_ratio: 1
+    description: Subapplications with a positive recorded obligation whose verbatim status is not "Obligated" (e.g. "Subaward Accepted", "Approved", "Submitted to FEMA").
+    handling: Expected; status and obligation are independent source fields, so stages use the recorded amount and statuses are shown verbatim, never inferred from the amount.
+    sql: |
+      select count(*) filter (where status is distinct from 'Obligated'), count(*)
+      from (select distinct hma_id, status from curated.fact_hma_allocation
+            where has_positive_obligation) s
+    sample_sql: |
+      select status, count(distinct hma_id) as subapplications
+      from curated.fact_hma_allocation where has_positive_obligation
+      group by 1 order by 2 desc
+
+  - name: hma_stage_exclusive_exhaustive
+    layer: serving
+    severity: critical
+    description: Every county row (all periods and each five-year period) is in exactly one stage consistent with its counts and amounts (geography_not_comparable = curated.dim_county says HMA geography is not comparable, checked first; not_observed = no county-mapped subapplication; obligated = at least one with a positive obligation; otherwise observed_no_positive_obligation); non-comparable units carry no HMA per-capita value or rank; program x hazard rows are never not_observed.
+    handling: Fail the run; the stages must partition counties without overlap or gaps.
+    sql: |
+      select (select count(*) from serving.county_resilience_profile p
+              join curated.dim_county d using (county_fips)
+              where p.hma_geography_comparable is distinct from d.hma_geography_comparable
+                 or (not d.hma_geography_comparable
+                     and (p.hma_per_capita_real is not null or p.hma_pctile is not null
+                          or p.is_low_obligation is not null or p.is_high_need_low_obligation)))
+           + (select count(*) from serving.county_resilience_profile p
+              join curated.dim_county d using (county_fips)
+              where p.hma_activity_stage is distinct from
+                      case when not d.hma_geography_comparable then 'geography_not_comparable'
+                           when p.hma_observed_subapplications = 0 then 'not_observed'
+                           when p.hma_positive_obligation_subapplications = 0
+                             then 'observed_no_positive_obligation'
+                           else 'obligated' end)
+           + (select count(*) from serving.hma_county_period_activity a
+              join curated.dim_county d using (county_fips)
+              where a.hma_activity_stage is distinct from
+                      case when not d.hma_geography_comparable then 'geography_not_comparable'
+                           when a.observed_subapplications = 0 then 'not_observed'
+                           when a.positive_obligation_subapplications = 0
+                             then 'observed_no_positive_obligation'
+                           else 'obligated' end
+                 or (not d.hma_geography_comparable and a.obligated_real_per_capita is not null))
+           + (select count(*) from serving.county_resilience_profile
+              where hma_positive_obligation_subapplications not between 0 and hma_observed_subapplications
+                 or hma_no_positive_obligation_subapplications
+                      <> hma_observed_subapplications - hma_positive_obligation_subapplications
+                 or (hma_activity_stage in ('not_observed', 'observed_no_positive_obligation')
+                     and (hma_obligated_usd <> 0 or hma_obligated_real_usd <> 0
+                          or hma_weather_obligated_usd <> 0 or hma_weather_obligated_real_usd <> 0))
+                 or (hma_activity_stage = 'obligated' and hma_obligated_usd <= 0)
+                 or hma_weather_obligated_usd > hma_obligated_usd + 0.01
+                 or (hma_observed_subapplications = 0) <> (hma_status_mix = '{}'::jsonb))
+           + (select count(*) from serving.hma_county_period_activity
+              where positive_obligation_subapplications not between 0 and observed_subapplications
+                 or no_positive_obligation_subapplications
+                      <> observed_subapplications - positive_obligation_subapplications
+                 or (hma_activity_stage in ('not_observed', 'observed_no_positive_obligation')
+                     and (obligated_usd <> 0 or obligated_real_usd <> 0
+                          or weather_obligated_usd <> 0 or weather_obligated_real_usd <> 0))
+                 or (hma_activity_stage = 'obligated' and obligated_usd <= 0)
+                 or weather_obligated_usd > obligated_usd + 0.01
+                 or (observed_subapplications = 0) <> (status_mix = '{}'::jsonb))
+           + (select count(*) from serving.hma_county_program_hazard_activity
+              where hma_activity_stage is distinct from
+                      case when positive_obligation_subapplications > 0 then 'obligated'
+                           else 'observed_no_positive_obligation' end
+                 or observed_subapplications < 1
+                 or positive_obligation_subapplications not between 0 and observed_subapplications),
+             2 * (select count(*) from serving.county_resilience_profile)
+           + (select count(*) from serving.hma_county_period_activity)
+           + (select count(*) from serving.hma_county_program_hazard_activity)
+    sample_sql: |
+      select county_fips, period_label, hma_activity_stage, observed_subapplications,
+             positive_obligation_subapplications, obligated_usd
+      from serving.hma_county_period_activity
+      where hma_activity_stage is distinct from
+              case when not hma_geography_comparable then 'geography_not_comparable'
+                   when observed_subapplications = 0 then 'not_observed'
+                   when positive_obligation_subapplications = 0
+                     then 'observed_no_positive_obligation'
+                   else 'obligated' end
+      limit 10
+
+  - name: hma_period_grid_complete
+    layer: serving
+    severity: critical
+    description: serving.hma_county_period_activity has exactly one row for every county of serving.county_resilience_profile in every period of curated.dim_hma_period (not_observed rows are explicit, never missing).
+    handling: Fail the run; a missing county-period would hide a not_observed stage.
+    sql: |
+      select abs((select count(*) from serving.hma_county_period_activity)
+                 - (select count(*) from serving.county_resilience_profile)
+                   * (select count(*) from curated.dim_hma_period))
+           + (select count(*) from serving.county_resilience_profile c
+              cross join curated.dim_hma_period p
+              where not exists (select 1 from serving.hma_county_period_activity a
+                                where a.county_fips = c.county_fips
+                                  and a.period_start_fy = p.period_start_fy)),
+             greatest((select count(*) from serving.county_resilience_profile)
+                      * (select count(*) from curated.dim_hma_period), 1)
+
+  - name: hma_period_reconciles_profile
+    layer: serving
+    severity: critical
+    description: For every county, the five-year-period counts and amounts (observed and positive-obligation subapplications, recorded obligation nominal and real, weather-related obligation) add up to the all-period profile values, and the all-period stage agrees with the period stages (a geography_not_comparable unit is non-comparable in every period).
+    handling: Fail the run; period and all-period views must tell the same story.
+    sql: |
+      with per as (
+        select county_fips,
+               sum(observed_subapplications)              as observed,
+               sum(positive_obligation_subapplications)   as positive,
+               sum(obligated_usd)                         as obligated_usd,
+               sum(obligated_real_usd)                    as obligated_real_usd,
+               sum(weather_obligated_usd)                 as weather_usd,
+               sum(weather_obligated_real_usd)            as weather_real_usd,
+               bool_or(hma_activity_stage = 'obligated')     as any_obligated,
+               bool_and(hma_activity_stage = 'not_observed') as all_not_observed,
+               bool_and(hma_activity_stage = 'geography_not_comparable') as all_not_comparable,
+               bool_or(hma_activity_stage = 'geography_not_comparable')  as any_not_comparable
+        from serving.hma_county_period_activity
+        group by county_fips
+      )
+      select count(*) filter (where per.county_fips is null
+               or c.hma_observed_subapplications <> per.observed
+               or c.hma_positive_obligation_subapplications <> per.positive
+               or abs(c.hma_obligated_usd - per.obligated_usd) > 0.01
+               or abs(c.hma_obligated_real_usd - per.obligated_real_usd) > 0.01
+               or abs(c.hma_weather_obligated_usd - per.weather_usd) > 0.01
+               or abs(c.hma_weather_obligated_real_usd - per.weather_real_usd) > 0.01
+               or (c.hma_activity_stage = 'obligated') <> per.any_obligated
+               or (c.hma_activity_stage = 'not_observed') <> per.all_not_observed
+               or (c.hma_activity_stage = 'geography_not_comparable') <> per.all_not_comparable
+               or per.all_not_comparable <> per.any_not_comparable),
+             count(*)
+      from serving.county_resilience_profile c
+      left join per using (county_fips)
+
+  - name: hma_county_amounts_reconcile_fact
+    layer: serving
+    severity: critical
+    description: County HMA columns of the profile equal the curated fact (distinct county-subapplication links, positive-obligation links, and the county-mapped recorded obligation, nominal, real and weather-related).
+    handling: Fail the run.
+    sql: |
+      select ((select count(*) from (select distinct county_fips, hma_id
+                                     from curated.fact_hma_allocation
+                                     where county_fips is not null) x)
+                <> (select coalesce(sum(hma_observed_subapplications), 0)
+                    from serving.county_resilience_profile))::int
+           + ((select count(*) from (select distinct county_fips, hma_id
+                                     from curated.fact_hma_allocation
+                                     where county_fips is not null and has_positive_obligation) x)
+                <> (select coalesce(sum(hma_positive_obligation_subapplications), 0)
+                    from serving.county_resilience_profile))::int
+           + (abs((select coalesce(sum(obligated_usd), 0) from curated.fact_hma_allocation
+                   where county_fips is not null and has_positive_obligation)
+                  - (select coalesce(sum(hma_obligated_usd), 0)
+                     from serving.county_resilience_profile)) > 0.01)::int
+           + (abs((select coalesce(sum(obligated_real_usd), 0) from curated.fact_hma_allocation
+                   where county_fips is not null and has_positive_obligation)
+                  - (select coalesce(sum(hma_obligated_real_usd), 0)
+                     from serving.county_resilience_profile)) > 0.01)::int
+           + (abs((select coalesce(sum(obligated_usd), 0) from curated.fact_hma_allocation
+                   where county_fips is not null and has_positive_obligation and is_weather)
+                  - (select coalesce(sum(hma_weather_obligated_usd), 0)
+                     from serving.county_resilience_profile)) > 0.01)::int,
+             5
+
+  - name: hma_status_summary_reconciles
+    layer: serving
+    severity: critical
+    description: serving.hma_status_summary counts every in-scope subapplication exactly once, its counts per verbatim status equal staging, and its recorded obligation (whole and county-attributed) equals the curated fact and the county profile.
+    handling: Fail the run.
+    sql: |
+      with sub as (
+        select hma_id, bool_or(has_positive_obligation) as positive,
+               sum(obligated_usd) as amount
+        from curated.fact_hma_allocation group by hma_id
+      ),
+      staged as (
+        select h.status, count(*)::numeric as n
+        from staging.hma_subapplications h cross join ops.active_profile p
+        where h.fiscal_year between p.start_year and p.end_year
+          and (p.states is null or h.state_abbr = any (p.states))
+        group by h.status
+      ),
+      served as (
+        select status, sum(subapplications)::numeric as n
+        from serving.hma_status_summary group by status
+      )
+      select ((select coalesce(sum(subapplications), 0) from serving.hma_status_summary)
+                <> (select count(*) from sub))::int
+           + ((select coalesce(sum(positive_obligation_subapplications), 0)
+               from serving.hma_status_summary)
+                <> (select count(*) from sub where positive))::int
+           + (abs((select coalesce(sum(obligated_usd), 0) from serving.hma_status_summary)
+                  - (select coalesce(sum(amount), 0) from sub where positive)) > 0.01)::int
+           + (abs((select coalesce(sum(county_attributed_obligated_usd), 0)
+                   from serving.hma_status_summary)
+                  - (select coalesce(sum(hma_obligated_usd), 0)
+                     from serving.county_resilience_profile)) > 0.01)::int
+           + (select count(*) from ((select * from staged except select * from served)
+                                    union all
+                                    (select * from served except select * from staged)) d),
+             4 + greatest((select count(*) from staged), 1)
+    sample_sql: |
+      select status, county_mapping, sum(subapplications) as subapplications
+      from serving.hma_status_summary group by 1, 2 order by 1, 2
+
+  - name: hma_program_hazard_reconciles
+    layer: serving
+    severity: critical
+    description: The program x hazard-family rows of each county and period add up exactly to that county-period (observed and positive-obligation subapplications, recorded obligation nominal and real); program x hazard rows exist only where the county-period has observed activity.
+    handling: Fail the run.
+    sql: |
+      with ph as (
+        select county_fips, period_start_fy,
+               sum(observed_subapplications)            as observed,
+               sum(positive_obligation_subapplications) as positive,
+               sum(obligated_usd)                       as obligated_usd,
+               sum(obligated_real_usd)                  as obligated_real_usd
+        from serving.hma_county_program_hazard_activity
+        group by county_fips, period_start_fy
+      )
+      select count(*) filter (where a.county_fips is null
+               or (a.observed_subapplications > 0) <> (ph.county_fips is not null)
+               or coalesce(ph.observed, 0) <> a.observed_subapplications
+               or coalesce(ph.positive, 0) <> a.positive_obligation_subapplications
+               or abs(coalesce(ph.obligated_usd, 0) - a.obligated_usd) > 0.01
+               or abs(coalesce(ph.obligated_real_usd, 0) - a.obligated_real_usd) > 0.01),
+             count(*)
+      from serving.hma_county_period_activity a
+      full join ph on ph.county_fips = a.county_fips and ph.period_start_fy = a.period_start_fy
+
+  - name: high_need_low_obligation_flag_exact
+    layer: serving
+    severity: critical
+    description: is_high_need_low_obligation is recomputed independently from totals and population (not from the per-capita or rank columns) and must match exactly (states + DC; storm history comparable and HMA-comparable units only; top-quartile constant-dollar damage per resident, percent rank >= 0.75 over every states + DC unit with a population and comparable storm history; SVI quartile 4; constant-dollar recorded HMA obligation per resident at or below the median of HMA-comparable states + DC units). Storm-history comparability is re-derived here from analysis_universe and state (a current unit of a state that also has legacy_geography units is not comparable), never read from a stored flag, and damage per resident is recomputed from curated.fact_storm_event_county, so a false-zero damage history for the CT planning regions would change the expected ranks and fail. HMA comparability comes from curated.dim_county. is_low_obligation matches the same median rule in EVERY analysis universe, each against its own median (Puerto Rico against Puerto Rico), and is NULL for non-comparable units or units without population.
+    handling: Fail the run; the follow-up screen must be exactly the documented rule.
+    sql: |
+      with fact_damage as (
+        select county_fips, sum(damage_total_real_usd) as real_usd
+        from curated.fact_storm_event_county where is_weather group by county_fips
+      ),
+      c as (
+        select p.county_fips, p.analysis_universe, p.svi_quartile, p.is_low_obligation,
+               p.is_high_need_low_obligation, d.hma_geography_comparable as comparable,
+               hist.comparable as history_comparable,
+               case when p.population_base > 0 and hist.comparable
+                    then coalesce(fd.real_usd, 0) / p.population_base end as dmg_pc,
+               case when p.population_base > 0 and d.hma_geography_comparable
+                    then p.hma_obligated_real_usd / p.population_base end as hma_pc
+        from serving.county_resilience_profile p
+        join curated.dim_county d using (county_fips)
+        cross join lateral (
+          select not (d.analysis_universe <> 'legacy_geography'
+                      and exists (select 1 from curated.dim_county l
+                                  where l.state_fips = d.state_fips
+                                    and l.analysis_universe = 'legacy_geography')) as comparable
+        ) hist
+        left join fact_damage fd using (county_fips)
+      ),
+      med as (  -- one median per analysis universe, comparable units only
+        select analysis_universe,
+               percentile_disc(0.5) within group (order by hma_pc) as median_value
+        from c where hma_pc is not null group by analysis_universe
+      ),
+      dmg as (
+        select county_fips, percent_rank() over (order by dmg_pc) as pr
+        from c where analysis_universe = 'states_dc' and dmg_pc is not null
+      )
+      select count(*) filter (where
+               c.is_high_need_low_obligation is distinct from
+                 coalesce(c.analysis_universe = 'states_dc' and c.comparable
+                          and c.history_comparable and d.pr >= 0.75
+                          and c.svi_quartile = 4 and c.hma_pc <= m.median_value, false)
+            or c.is_low_obligation is distinct from (c.hma_pc <= m.median_value)),
+             count(*)
+      from c
+      left join med m using (analysis_universe)
+      left join dmg d using (county_fips)
+    sample_sql: |
+      select county_fips, county_name, state_abbr, damage_pctile, svi_quartile,
+             hma_per_capita_real, hma_per_capita_real_median, is_high_need_low_obligation
+      from serving.county_resilience_profile where is_high_need_low_obligation limit 10
+
+  - name: hma_stage_summary_reconciles
+    layer: serving
+    severity: critical
+    description: In serving.hma_stage_summary the four stages add up to the counties of every row, and every row's stage counts equal an independent recount from curated.fact_hma_allocation and curated.dim_county (county x period observed / positive-obligation flags, geography comparability from the dimension, not from any serving stage column). The all-period rows also equal the stage columns of serving.svi_quartile_summary, each period covers every profile county once, and every period of curated.dim_hma_period is present.
+    handling: Fail the run.
+    sql: |
+      with grid as (
+        select d.analysis_universe, d.svi_quartile_label, d.county_fips,
+               d.hma_geography_comparable as comparable, p.period_label, p.period_start_fy
+        from serving.county_resilience_profile c
+        join curated.dim_county d using (county_fips)
+        cross join (select period_label, period_start_fy from curated.dim_hma_period
+                    union all select 'All profile fiscal years', null::int) p
+      ),
+      act as (  -- per county and period, and per county over all periods
+        select county_fips, period_start_fy, bool_or(has_positive_obligation) as pos
+        from curated.fact_hma_allocation where county_fips is not null
+        group by grouping sets ((county_fips, period_start_fy), (county_fips))
+      ),
+      expected as (
+        select g.analysis_universe, g.svi_quartile_label, g.period_label,
+               count(*)                                                        as counties,
+               count(*) filter (where not g.comparable)                        as not_comparable,
+               count(*) filter (where g.comparable and a.county_fips is null)  as not_observed,
+               count(*) filter (where g.comparable and a.county_fips is not null and not a.pos)
+                                                                               as observed_no_pos,
+               count(*) filter (where g.comparable and a.pos)                  as obligated
+        from grid g
+        left join act a on a.county_fips = g.county_fips
+                       and a.period_start_fy is not distinct from g.period_start_fy
+        group by 1, 2, 3
+      )
+      select (select count(*) from serving.hma_stage_summary
+              where counties <> counties_geography_not_comparable + counties_not_observed
+                                + counties_observed_no_positive_obligation + counties_obligated
+                 or counties_hma_comparable <> counties - counties_geography_not_comparable)
+           + (select count(*) from expected e
+              full join serving.hma_stage_summary s
+                on s.analysis_universe = e.analysis_universe
+               and s.svi_quartile_label = e.svi_quartile_label
+               and s.period_label = e.period_label
+              where e.period_label is null or s.period_label is null
+                 or (e.counties, e.not_comparable, e.not_observed, e.observed_no_pos, e.obligated)
+                    is distinct from
+                    (s.counties, s.counties_geography_not_comparable, s.counties_not_observed,
+                     s.counties_observed_no_positive_obligation, s.counties_obligated))
+           + (select count(*) from serving.hma_stage_summary s
+              join serving.svi_quartile_summary q using (analysis_universe, svi_quartile_label)
+              where s.period_scope = 'all_periods'
+                and (s.counties <> q.counties
+                     or s.counties_geography_not_comparable <> q.counties_hma_geography_not_comparable
+                     or s.counties_not_observed <> q.counties_hma_not_observed
+                     or s.counties_observed_no_positive_obligation
+                          <> q.counties_hma_observed_no_positive_obligation
+                     or s.counties_obligated <> q.counties_hma_obligated
+                     or s.distinct_observed_subapplications <> q.hma_observed_subapplications
+                     or abs(s.obligated_real_usd - q.hma_obligated_real_usd) > 0.01))
+           + (select count(*) from (select period_label, sum(counties) as n
+                                    from serving.hma_stage_summary group by period_label) t
+              where n <> (select count(*) from serving.county_resilience_profile))
+           + ((select count(distinct period_label) from serving.hma_stage_summary)
+                <> (select count(*) from curated.dim_hma_period) + 1)::int,
+             2 * (select count(*) from serving.hma_stage_summary) + 1
+    sample_sql: |
+      select analysis_universe, svi_quartile_label, period_label, counties,
+             counties_geography_not_comparable, counties_not_observed,
+             counties_observed_no_positive_obligation, counties_obligated
+      from serving.hma_stage_summary order by 1, 2, 3 limit 20
+
+  - name: hma_counties_not_observed
+    layer: serving
+    severity: info
+    max_fail_ratio: 1
+    description: HMA-comparable counties (states + DC and Puerto Rico; the CT planning regions are excluded) with no county-mapped HMA subapplication in OpenFEMA over the profile years.
+    handling: Reported as "no observed county-mapped subapplication", never as "did not apply"; local or state screening, statewide or unparsed entries and capacity limits are invisible in the source.
+    sql: |
+      select count(*) filter (where hma_activity_stage = 'not_observed'), count(*)
+      from serving.county_resilience_profile
+      where analysis_universe in ('states_dc', 'puerto_rico') and hma_geography_comparable
+
+  # ---------------- HMA geography break, scope and alignment ----------------
+  - name: hma_geography_break_guard
+    layer: serving
+    severity: critical
+    description: In every state where county-mapped HMA records land on legacy geography (today the 8 pre-2022 Connecticut counties), no CURRENT unit of that state (per curated.dim_county) may carry an ordinary HMA stage in the all-period profile or in any period; each must be geography_not_comparable. Triggered by the fact data, independently of the comparability flag.
+    handling: Fail the run; otherwise the 9 Connecticut planning regions would be shown as "not_observed" (zero obligation) while their HMA activity sits on the legacy counties, distorting states + DC ranks, stage counts, headlines and the follow-up screen.
+    sql: |
+      with broken_states as (
+        select distinct l.state_fips
+        from curated.fact_hma_allocation f
+        join curated.dim_county l using (county_fips)
+        where l.analysis_universe = 'legacy_geography'
+      ),
+      current_units as (
+        select d.county_fips from curated.dim_county d
+        join broken_states b using (state_fips)
+        where d.analysis_universe <> 'legacy_geography'
+      )
+      select (select count(*) from serving.county_resilience_profile p
+              join current_units u using (county_fips)
+              where p.hma_activity_stage <> 'geography_not_comparable')
+           + (select count(*) from serving.hma_county_period_activity a
+              join current_units u using (county_fips)
+              where a.hma_activity_stage <> 'geography_not_comparable'),
+             greatest((select count(*) from serving.county_resilience_profile p
+                       join current_units u using (county_fips))
+                      + (select count(*) from serving.hma_county_period_activity a
+                         join current_units u using (county_fips)), 1)
+    sample_sql: |
+      select p.county_fips, p.county_name, p.state_abbr, p.hma_activity_stage
+      from serving.county_resilience_profile p
+      join curated.dim_county d using (county_fips)
+      where d.analysis_universe <> 'legacy_geography'
+        and d.state_fips in (select l.state_fips from curated.fact_hma_allocation f
+                             join curated.dim_county l using (county_fips)
+                             where l.analysis_universe = 'legacy_geography')
+        and p.hma_activity_stage <> 'geography_not_comparable'
+      limit 10
+
+  - name: hma_geography_not_comparable_units
+    layer: serving
+    severity: info
+    max_fail_ratio: 1
+    description: Current units whose HMA geography is not comparable (the 9 Connecticut planning regions nationally; none in the fixture profile), out of all units in the county profile.
+    handling: Stage geography_not_comparable in the profile and in every period; excluded from HMA denominators, ranks, medians and the follow-up screen. SVI and population keep them; their storm and declaration history is not comparable either (see storm_declaration_geography_not_comparable_units). HMA amounts of the legacy counties are never re-mapped to the regions (no defensible crosswalk).
+    sql: |
+      select count(*) filter (where hma_activity_stage = 'geography_not_comparable'), count(*)
+      from serving.county_resilience_profile
+
+  - name: hma_records_on_noncomparable_geography
+    layer: curated
+    severity: warn
+    max_fail_ratio: 0
+    description: County-mapped HMA allocation rows that resolved to a unit flagged hma_geography_comparable = false (a benefitingCounties entry naming a Connecticut planning region).
+    handling: Expected 0. Such rows would be counted under geography_not_comparable and not in any HMA rate; if this fires, review the sample and decide deliberately how to attribute them.
+    sql: |
+      select count(*) filter (where d.hma_geography_comparable = false),
+             count(*)
+      from curated.fact_hma_allocation f
+      join curated.dim_county d using (county_fips)
+    sample_sql: |
+      select f.state_abbr, f.benefiting_area_raw, f.county_fips, count(*) n
+      from curated.fact_hma_allocation f join curated.dim_county d using (county_fips)
+      where not d.hma_geography_comparable group by 1, 2, 3 order by n desc limit 10
+
+  # ---------------- storm / declaration history across the geography break ----------------
+  # NOAA Storm Events and OpenFEMA declarations, like HMA, record 2000-2025 Connecticut history on
+  # the 8 legacy counties (09001-09015). The 9 current planning regions (09110-09190) keep SVI and
+  # population but have no comparable storm/declaration history: NULL, never zero, and no rank.
+  - name: storm_declaration_geography_break_guard
+    layer: serving
+    severity: critical
+    description: In every state where weather storm-event or declaration facts land on legacy geography (today the 8 pre-2022 Connecticut counties), every CURRENT unit of that state (identified from curated.dim_county analysis_universe and state, not from a comparability flag) must be marked storm/declaration-non-comparable in the dimension and the profile, and must carry NULL - not zero - storm events, damage (total, property, crops, nominal and real), deaths, injuries, significant events and covered events, significant and covered damage, major disasters, emergencies, per-capita damage, coverage rate, damage percentile, is_high_loss and HMA-to-damage ratio; it must not be in the follow-up screen; and its same-year storm damage must be NULL in every HMA period. Triggered by the fact data, independently of the flag.
+    handling: Fail the run; otherwise the 9 Connecticut planning regions would get false-zero storm and declaration history that enters damage ranks, damage quartiles, SVI-quartile damage and coverage rates and the follow-up screen (moving other counties' ranks; nationally it put Union County SC into the screen).
+    sql: |
+      with broken_states as (
+        select distinct l.state_fips
+        from curated.dim_county l
+        where l.analysis_universe = 'legacy_geography'
+          and (exists (select 1 from curated.fact_storm_event_county f
+                       where f.county_fips = l.county_fips)
+               or exists (select 1 from curated.fact_declaration_area a
+                          where a.county_fips = l.county_fips))
+      ),
+      current_units as (
+        select d.county_fips, d.storm_declaration_geography_comparable as dim_flag
+        from curated.dim_county d
+        join broken_states b using (state_fips)
+        where d.analysis_universe <> 'legacy_geography'
+      )
+      select (select count(*) from serving.county_resilience_profile p
+              join current_units u using (county_fips)
+              where u.dim_flag is distinct from false
+                 or p.storm_declaration_geography_comparable is distinct from false
+                 or num_nonnulls(p.storm_events, p.damage_total_usd, p.damage_total_real_usd,
+                                 p.damage_property_usd, p.damage_crops_usd, p.deaths, p.injuries,
+                                 p.significant_events, p.significant_events_covered,
+                                 p.significant_damage_usd, p.covered_damage_usd,
+                                 p.major_disasters, p.emergencies, p.damage_per_capita,
+                                 p.damage_per_capita_real, p.coverage_rate, p.damage_pctile,
+                                 p.is_high_loss, p.hma_to_damage_ratio) > 0
+                 or p.is_high_need_low_obligation is distinct from false)
+           + (select count(*) from serving.hma_county_period_activity a
+              join current_units u using (county_fips)
+              where num_nonnulls(a.storm_damage_usd_same_years,
+                                 a.storm_damage_real_usd_same_years) > 0),
+             greatest((select count(*) from serving.county_resilience_profile p
+                       join current_units u using (county_fips))
+                      + (select count(*) from serving.hma_county_period_activity a
+                         join current_units u using (county_fips)), 1)
+    sample_sql: |
+      select p.county_fips, p.county_name, p.state_abbr, p.storm_declaration_geography_comparable,
+             p.storm_events, p.damage_total_real_usd, p.major_disasters, p.damage_pctile,
+             p.is_high_need_low_obligation
+      from serving.county_resilience_profile p
+      join curated.dim_county d using (county_fips)
+      where d.analysis_universe <> 'legacy_geography'
+        and d.state_fips in (select l.state_fips from curated.dim_county l
+                             where l.analysis_universe = 'legacy_geography')
+        and (p.storm_declaration_geography_comparable or p.storm_events is not null
+             or p.damage_pctile is not null)
+      limit 10
+
+  - name: history_summaries_reconcile
+    layer: serving
+    severity: critical
+    description: The storm and declaration columns of serving.svi_quartile_summary (counties_history_comparable / _not_comparable, history_comparable_population, damage_total_real_usd, damage_per_capita_real, significant and covered event-county pairs) and of the all-period rows of serving.hma_stage_summary (counties_storm_history_comparable, storm_damage_real_usd) equal an independent recount from curated.fact_storm_event_county, serving.event_declaration_coverage and curated.dim_county, with storm-history comparability re-derived from analysis_universe and state (never from a stored flag). A unit with false-zero history in a numerator or a population denominator changes the recount and fails.
+    handling: Fail the run; Q1 and Q2 rates must use only units with comparable storm and declaration history in both numerator and denominator.
+    sql: |
+      with legacy_states as (
+        select distinct state_fips from curated.dim_county
+        where analysis_universe = 'legacy_geography'
+      ),
+      u as (
+        select p.county_fips, p.analysis_universe, p.svi_quartile_label, p.population_base,
+               not (d.analysis_universe <> 'legacy_geography'
+                    and d.state_fips in (select state_fips from legacy_states)) as comparable
+        from serving.county_resilience_profile p
+        join curated.dim_county d using (county_fips)
+      ),
+      dmg as (
+        select county_fips, sum(damage_total_real_usd) as real_usd
+        from curated.fact_storm_event_county where is_weather group by county_fips
+      ),
+      sig as (
+        select county_fips, count(*) as pairs,
+               count(*) filter (where covered_by_major_disaster) as covered
+        from serving.event_declaration_coverage group by county_fips
+      ),
+      expected as (
+        select u.analysis_universe, u.svi_quartile_label,
+               count(*) filter (where u.comparable)                         as comparable_n,
+               count(*) filter (where not u.comparable)                     as not_comparable_n,
+               sum(u.population_base) filter (where u.comparable)           as pop,
+               coalesce(sum(g.real_usd) filter (where u.comparable), 0)     as real_usd,
+               coalesce(sum(s.pairs) filter (where u.comparable), 0)        as pairs,
+               coalesce(sum(s.covered) filter (where u.comparable), 0)      as covered
+        from u
+        left join dmg g using (county_fips)
+        left join sig s using (county_fips)
+        group by u.analysis_universe, u.svi_quartile_label
+      )
+      select (select count(*) from expected e
+              full join serving.svi_quartile_summary q
+                on q.analysis_universe = e.analysis_universe
+               and q.svi_quartile_label = e.svi_quartile_label
+              where e.analysis_universe is null or q.analysis_universe is null
+                 or (e.comparable_n, e.not_comparable_n)
+                    is distinct from (q.counties_history_comparable, q.counties_history_not_comparable)
+                 or e.pop is distinct from q.history_comparable_population
+                 or abs(e.real_usd - coalesce(q.damage_total_real_usd, 0)) > 0.01
+                 or e.pairs <> coalesce(q.significant_event_counties, 0)
+                 or e.covered <> coalesce(q.covered_event_counties, 0)
+                 or (coalesce(e.pop, 0) > 0) <> (q.damage_per_capita_real is not null)
+                 or abs(coalesce(e.real_usd / nullif(e.pop, 0), 0)
+                        - coalesce(q.damage_per_capita_real, 0)) > 1e-6)
+           + (select count(*) from expected e
+              join serving.hma_stage_summary s
+                on s.analysis_universe = e.analysis_universe
+               and s.svi_quartile_label = e.svi_quartile_label
+              where s.period_scope = 'all_periods'
+                and (s.counties_storm_history_comparable <> e.comparable_n
+                     or abs(coalesce(s.storm_damage_real_usd, 0) - e.real_usd) > 0.01)),
+             2 * greatest((select count(*) from expected), 1)
+    sample_sql: |
+      select analysis_universe, svi_quartile_label, counties, counties_history_comparable,
+             counties_history_not_comparable, population, history_comparable_population,
+             damage_total_real_usd, damage_per_capita_real, coverage_rate
+      from serving.svi_quartile_summary order by 1, 2
+
+  - name: storm_declaration_geography_not_comparable_units
+    layer: serving
+    severity: info
+    max_fail_ratio: 1
+    description: Current units whose storm/declaration history is not comparable (the 9 Connecticut planning regions nationally; none in the fixture profile), out of all units in the county profile.
+    handling: Storm, damage, casualty, coverage and declaration columns NULL (not zero); no damage rank or quartile; outside SVI-quartile damage and coverage numerators and denominators and the follow-up screen; SVI and population kept. Legacy-county facts are never crosswalked or allocated to them.
+    sql: |
+      select count(*) filter (where not storm_declaration_geography_comparable), count(*)
+      from serving.county_resilience_profile
+
+  - name: history_facts_on_noncomparable_geography
+    layer: curated
+    severity: warn
+    max_fail_ratio: 0
+    description: Weather storm-event-county and county declaration-area fact rows that resolved to a current unit flagged storm_declaration_geography_comparable = false (e.g. a zone crosswalk version or a declaration that already names a Connecticut planning region).
+    handling: Expected 0 for comparable 2000-2025 history. Such rows stay in the curated facts, in state-level tables and in the event-level Q2 table (serving.event_declaration_coverage), but are withheld from the county profile because a partial post-change history is not comparable with a 2000-2025 total; serving_damage_reconciles accounts for the withheld damage. If this fires, review the sample and decide deliberately.
+    sql: |
+      select (select count(*) from curated.fact_storm_event_county f
+              join curated.dim_county d using (county_fips)
+              where f.is_weather and not d.storm_declaration_geography_comparable)
+           + (select count(*) from curated.fact_declaration_area a
+              join curated.dim_county d using (county_fips)
+              where a.is_weather and not d.storm_declaration_geography_comparable),
+             greatest((select count(*) from curated.fact_storm_event_county where is_weather)
+                      + (select count(*) from curated.fact_declaration_area
+                         where is_weather and county_fips is not null), 1)
+    sample_sql: |
+      select 'storm' as source, f.county_fips, min(f.event_year) as first_year,
+             max(f.event_year) as last_year, count(*) as fact_rows,
+             sum(f.damage_total_real_usd) as damage_real_usd
+      from curated.fact_storm_event_county f join curated.dim_county d using (county_fips)
+      where f.is_weather and not d.storm_declaration_geography_comparable
+      group by 1, 2
+      union all
+      select 'declaration', a.county_fips, min(extract(year from a.incident_begin_date))::int,
+             max(extract(year from a.incident_begin_date))::int, count(*), null
+      from curated.fact_declaration_area a join curated.dim_county d using (county_fips)
+      where a.is_weather and not d.storm_declaration_geography_comparable
+      group by 1, 2
+      order by 1, 2
+
+  - name: state_year_hma_out_of_scope
+    layer: serving
+    severity: info
+    max_fail_ratio: 1
+    description: In-scope HMA subapplications that have no row in serving.state_year_summary because the applicant state is empty or is not a state, DC or territory of curated.dim_county (nationally, subapplications with no applicant state and FM). The sample gives their count and recorded obligation by applicant.
+    handling: Kept in curated.fact_hma_allocation and in every county / status table; serving.state_year_summary is documented as not a national total, and state_year_hma_reconciles proves state-year rows + these = the curated fact.
+    sql: |
+      with sub as (select distinct hma_id, state_abbr from curated.fact_hma_allocation)
+      select count(*) filter (where state_abbr is null
+                                 or state_abbr not in (select state_abbr from serving.state_year_summary)),
+             count(*)
+      from sub
+    sample_sql: |
+      select coalesce(f.state_abbr, '(no applicant state)') as applicant_state,
+             count(distinct f.hma_id) as subapplications,
+             sum(f.obligated_usd) filter (where f.has_positive_obligation) as positive_obligated_usd,
+             sum(f.obligated_real_usd) filter (where f.has_positive_obligation)
+               as positive_obligated_real_usd
+      from curated.fact_hma_allocation f
+      where f.state_abbr is null
+         or f.state_abbr not in (select state_abbr from serving.state_year_summary)
+      group by 1 order by 2 desc
+
+  - name: state_year_hma_reconciles
+    layer: serving
+    severity: critical
+    description: serving.state_year_summary HMA columns plus the out-of-scope subapplications (no applicant state, or applicant outside curated.dim_county) equal curated.fact_hma_allocation exactly - distinct subapplications, positive-obligation subapplications, and recorded positive obligation nominal and real.
+    handling: Fail the run; the state-year table may exclude records only in the documented, counted way.
+    sql: |
+      with sub as (
+        select hma_id, state_abbr, bool_or(has_positive_obligation) as pos,
+               coalesce(sum(obligated_usd) filter (where has_positive_obligation), 0) as usd,
+               coalesce(sum(obligated_real_usd) filter (where has_positive_obligation), 0) as real_usd,
+               (state_abbr is not null
+                and state_abbr in (select state_abbr from serving.state_year_summary)) as in_scope
+        from curated.fact_hma_allocation group by hma_id, state_abbr
+      ),
+      sy as (
+        select coalesce(sum(hma_observed_subapplications), 0) as n,
+               coalesce(sum(hma_positive_obligation_subapplications), 0) as npos,
+               coalesce(sum(hma_obligated_usd), 0) as usd,
+               coalesce(sum(hma_obligated_real_usd), 0) as real_usd
+        from serving.state_year_summary
+      )
+      select ((select n from sy) + (select count(*) from sub where not in_scope)
+                <> (select count(*) from sub))::int
+           + ((select npos from sy) + (select count(*) from sub where not in_scope and pos)
+                <> (select count(*) from sub where pos))::int
+           + (abs((select usd from sy) + (select coalesce(sum(usd), 0) from sub where not in_scope)
+                  - (select coalesce(sum(usd), 0) from sub)) > 0.01)::int
+           + (abs((select real_usd from sy)
+                  + (select coalesce(sum(real_usd), 0) from sub where not in_scope)
+                  - (select coalesce(sum(real_usd), 0) from sub)) > 0.01)::int,
+             4
+
+  - name: hma_damage_burden_reconciles
+    layer: serving
+    severity: critical
+    description: serving.hma_damage_burden_summary equals an independent recount - damage-burden quartile re-derived with percent_rank of constant-dollar weather damage from curated.fact_storm_event_county / population_base within each analysis universe, over units with a population and comparable storm history (re-derived from analysis_universe and state, not from a stored flag, so the CT planning regions can never be ranked with a false-zero history), stages re-derived from curated.fact_hma_allocation and HMA comparability from curated.dim_county - for counties, excluded HMA-non-comparable units, the three stage counts and recorded obligation.
+    handling: Fail the run; the Q3 damage-burden view must count every comparable unit with a damage rank exactly once, and no unit without comparable storm history.
+    sql: |
+      with fact_damage as (
+        select county_fips, sum(damage_total_real_usd) as real_usd
+        from curated.fact_storm_event_county where is_weather group by county_fips
+      ),
+      u as (
+        select p.county_fips, p.analysis_universe, p.hma_obligated_real_usd,
+               d.hma_geography_comparable as comparable,
+               percent_rank() over (partition by p.analysis_universe
+                                    order by coalesce(fd.real_usd, 0) / p.population_base) as pr
+        from serving.county_resilience_profile p
+        join curated.dim_county d using (county_fips)
+        left join fact_damage fd using (county_fips)
+        where p.population_base > 0
+          and not (d.analysis_universe <> 'legacy_geography'
+                   and exists (select 1 from curated.dim_county l
+                               where l.state_fips = d.state_fips
+                                 and l.analysis_universe = 'legacy_geography'))
+      ),
+      act as (
+        select county_fips, bool_or(has_positive_obligation) as pos
+        from curated.fact_hma_allocation where county_fips is not null group by county_fips
+      ),
+      expected as (
+        select u.analysis_universe,
+               case when u.pr < 0.25 then 1 when u.pr < 0.5 then 2 when u.pr < 0.75 then 3
+                    else 4 end as q,
+               count(*) filter (where u.comparable) as counties,
+               count(*) filter (where not u.comparable) as excluded,
+               count(*) filter (where u.comparable and a.county_fips is null) as not_observed,
+               count(*) filter (where u.comparable and not a.pos) as observed_no_pos,
+               count(*) filter (where u.comparable and a.pos) as obligated,
+               coalesce(sum(u.hma_obligated_real_usd) filter (where u.comparable), 0) as real_usd
+        from u left join act a using (county_fips)
+        group by 1, 2
+      )
+      select count(*) filter (where e.q is null or s.damage_burden_quartile is null
+               or (e.counties, e.excluded, e.not_observed, e.observed_no_pos, e.obligated)
+                  is distinct from
+                  (s.counties, s.counties_excluded_geography_not_comparable, s.counties_not_observed,
+                   s.counties_observed_no_positive_obligation, s.counties_obligated)
+               or abs(e.real_usd - s.obligated_real_usd) > 0.01),
+             greatest(count(*), 1)
+      from expected e
+      full join serving.hma_damage_burden_summary s
+        on s.analysis_universe = e.analysis_universe and s.damage_burden_quartile = e.q
+
+  - name: hma_weather_lower_bound_not_specified
+    layer: curated
+    severity: info
+    max_fail_ratio: 1
+    description: In-scope HMA subapplications with no primaryHazard (hazard_family 'Not specified'). They cannot be classified as weather or non-weather, so every weather-related recorded obligation is a LOWER BOUND.
+    handling: Kept; counted in recorded-obligation totals but never in weather-related totals. The report and dashboard show the count and the county-attributed positive obligation of these subapplications (queried, not hard-coded).
+    sql: |
+      select count(distinct hma_id) filter (where hazard_family = 'Not specified'),
+             count(distinct hma_id)
+      from curated.fact_hma_allocation
+    sample_sql: |
+      select program, count(distinct hma_id) as subapplications,
+             count(distinct hma_id) filter (where county_fips is not null) as county_attributed,
+             sum(obligated_real_usd) filter (where county_fips is not null
+                                               and has_positive_obligation)
+               as county_positive_obligated_real_usd
+      from curated.fact_hma_allocation where hazard_family = 'Not specified'
+      group by 1 order by 2 desc
