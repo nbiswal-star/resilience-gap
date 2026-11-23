@@ -1,0 +1,40 @@
+name: ci
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: resgap
+          POSTGRES_PASSWORD: resgap
+          POSTGRES_DB: resgap_test
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U resgap -d resgap_test"
+          --health-interval 5s --health-timeout 3s --health-retries 20
+    env:
+      RESGAP_TEST_DATABASE_URL: postgresql://resgap:resgap@localhost:5432/resgap_test
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+      - run: uv python install 3.12   # matches .python-version
+      - run: uv sync --extra dev
+      - name: Lint
+        run: uv run --extra dev ruff check src tests scripts dashboard
+      - name: Unit and integration tests (real-data fixtures, no network)
+        run: uv run --extra dev pytest -q
+      - name: Offline end-to-end demo
+        env:
+          RESGAP_DATABASE_URL: postgresql://resgap:resgap@localhost:5432/resgap_test
+          RESGAP_LAKE_DIR: ${{ runner.temp }}/lake
+        run: uv run --extra dev resgap --profile fixture run --offline-dir tests/fixtures --out ${{ runner.temp }}/report
+      - uses: actions/upload-artifact@v4
+        with:
+          name: findings-report
+          path: ${{ runner.temp }}/report/resilience_gap_report.html
