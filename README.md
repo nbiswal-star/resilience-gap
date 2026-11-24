@@ -288,7 +288,7 @@ The full justification is in [`docs/architecture.md`](docs/architecture.md).
 **From zero to a report** (copy and paste; each step lists the expected result):
 
 ```bash
-git clone <repo-url> resilience-gap && cd resilience-gap
+git clone https://github.com/nbiswal-star/resilience-gap.git && cd resilience-gap
 make setup          # creates .venv with Python 3.12 and installs resgap + dev tools
 make up             # creates .env from .env.example, starts PostgreSQL on localhost:5433, waits until ready
 make offline-demo   # whole pipeline on committed real excerpts, no network, a few seconds
@@ -316,24 +316,54 @@ use a second database: `docker compose exec db createdb -U resgap resgap_demo`, 
 
 **Team AWS RDS:** the shared `resgap` database is hosted on PostgreSQL 18.3 at
 `de-postgres.cn2o2ayyyx65.us-east-2.rds.amazonaws.com:5432` in `us-east-2`. TLS is required. Keep
-the password out of `.env`, shell history and Git; prompt for it in the current terminal instead:
+the password out of `.env`, shell history and Git.
+
+Each teammate who uses the shared RDS database must complete these access steps:
+
+1. Ask the project AWS owner to allow the teammate's current public IP on TCP port 5432. Find the
+   IP with `curl -4 https://checkip.amazonaws.com`; the AWS rule must use that address with `/32`.
+   Repeat this step when the public IP changes.
+2. Get the RDS password from the project owner through a private channel. Do not put it in Git,
+   chat logs, screenshots or a committed `.env` file.
+
+The repository is private. The repository owner must add each teammate as a collaborator. Each
+teammate must accept the GitHub invitation and authenticate with GitHub before cloning. Then clone
+and configure the shared path. This password prompt works in both Bash and zsh:
 
 ```bash
-read -rsp "RDS password: " RESGAP_DB_PASSWORD; echo
+git clone https://github.com/nbiswal-star/resilience-gap.git
+cd resilience-gap
+make setup
+
+RESGAP_DB_PASSWORD="$(uv run python -c 'import getpass; print(getpass.getpass("RDS password: "))')"
 export RESGAP_DATABASE_URL="postgresql://postgres:${RESGAP_DB_PASSWORD}@de-postgres.cn2o2ayyyx65.us-east-2.rds.amazonaws.com:5432/resgap?sslmode=require"
 unset RESGAP_DB_PASSWORD
-export RESGAP_OBJECT_STORE=local
-export RESGAP_LAKE_DIR="$HOME/Library/CloudStorage/Dropbox/resgap-lake"
 
-make setup
 make status                 # confirms the remote database is reachable
-make run PROFILE=sample     # host process -> shared Dropbox raw layer -> hosted PostgreSQL
+make report                 # reads RDS and writes a report on this laptop
+make dashboard              # reads RDS and starts the local dashboard
 ```
 
 Do not run `make up` for this path; that target starts the local Docker database. Keep integration
 tests on the disposable local `resgap_test` database because the test suite drops and rebuilds its
-pipeline schemas. The RDS security group must allow TCP 5432 from the current client IP. Each team
-member also needs access to the shared Dropbox folder before using the configuration above.
+pipeline schemas. The shared RDS login lets all teammates read the same results. Dropbox is not
+needed for `status`, `report` or `dashboard`.
+
+All teammates must have at least read access to the Dropbox folder so they can inspect the shared
+raw files. Only the teammate who runs shared ingestion needs edit access and a locally synced copy.
+That teammate must accept the `resgap-lake` folder invitation, make the folder available offline,
+and then run:
+
+```bash
+export RESGAP_OBJECT_STORE=local
+export RESGAP_LAKE_DIR="$HOME/Library/CloudStorage/Dropbox/resgap-lake"
+make run PROFILE=sample     # shared Dropbox raw layer -> hosted PostgreSQL
+```
+
+The Dropbox website URL for one account is not a team invitation or share link. Coordinate before
+running this command: it changes shared tables and Dropbox files, so only one teammate should run
+the shared pipeline at a time. For independent development and tests, use the Docker path below;
+it gives each teammate a separate database and does not change RDS.
 
 **Docker:** run `make up`. This starts `postgres:16-alpine`, publishes it on **127.0.0.1:5433**
 (loopback only, so it is not reachable from the network; 5433 avoids clashing with a local 5432),
@@ -642,10 +672,10 @@ credentials. Real environment variables override `.env`.
 * `offline/raw/...` for fixture copies
 
 **Team raw-data store: shared Dropbox folder.** The raw files and JSON pages live in the team's
-shared Dropbox folder **`resgap-lake/`** (every member has edit access), so the raw layer is not
-tied to one laptop. It holds the `raw/` tree above: 59 files (about 70 MB) from all 9 sources,
-from the `sample` run of 2026-11-23. To use it, add the folder to your Dropbox (desktop app,
-"available offline") and point the pipeline at your synced copy:
+shared Dropbox folder **`resgap-lake/`**, so the raw layer is not tied to one laptop. The teammate
+who runs shared ingestion must have edit access; all other teammates need at least read access.
+It holds the `raw/` tree above. To run ingestion, add the folder to your Dropbox desktop app, make
+it available offline, and point the pipeline at your synced copy:
 
 ```bash
 # .env  (macOS path shown; use wherever Dropbox syncs on your machine)
