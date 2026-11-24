@@ -1,6 +1,6 @@
 import pytest
 
-from resgap.config import load_profile, load_sources
+from resgap.config import load_profile, load_settings, load_sources
 from resgap.dq.runner import evaluate, load_checks
 
 
@@ -154,3 +154,10 @@ def test_geography_comparability_reaches_every_hma_stage_check():
 )
 def test_evaluate(failing, total, max_ratio, ok):
     assert evaluate(failing, total, max_ratio)[1] is ok
+
+
+def test_lake_dir_expands_home(monkeypatch, tmp_path):
+    # e.g. RESGAP_LAKE_DIR=~/Library/CloudStorage/Dropbox/resgap-lake for the shared folder
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("RESGAP_LAKE_DIR", "~/Dropbox/resgap-lake")
+    assert load_settings().lake_dir == tmp_path / "Dropbox" / "resgap-lake"

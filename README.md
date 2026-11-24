@@ -620,6 +620,23 @@ credentials. Real environment variables override `.env`.
 * `raw/openfema/HmaSubapplications/v2/scope=<id>/snapshot=<UTC time>/page-00001.json.gz`
 * `offline/raw/...` for fixture copies
 
+**Team raw-data store: shared Dropbox folder.** The raw files and JSON pages live in the team's
+shared Dropbox folder **`resgap-lake/`** (every member has edit access), so the raw layer is not
+tied to one laptop. It holds the `raw/` tree above: 59 files (about 70 MB) from all 9 sources,
+from the `sample` run of 2026-11-23. To use it, add the folder to your Dropbox (desktop app,
+"available offline") and point the pipeline at your synced copy:
+
+```bash
+# .env  (macOS path shown; use wherever Dropbox syncs on your machine)
+RESGAP_OBJECT_STORE=local
+RESGAP_LAKE_DIR=~/Library/CloudStorage/Dropbox/resgap-lake
+```
+
+Every run then writes its downloads into the shared folder, so the team always has the exact
+source bytes in one place. Downloads are reused only when the same database recorded them, so a
+first run against a new database fetches the sources again and refreshes the shared copies
+(same keys). Without the desktop app, browse or download `raw/` on dropbox.com.
+
 To use S3 instead of the local directory:
 
 ```bash

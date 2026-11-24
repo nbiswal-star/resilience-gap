@@ -66,7 +66,7 @@ def _env(name: str, default: str) -> str:
 
 def load_settings(profile: str | None = None) -> Settings:
     load_dotenv()
-    lake = Path(_env("RESGAP_LAKE_DIR", "./data/lake"))
+    lake = Path(_env("RESGAP_LAKE_DIR", "./data/lake")).expanduser()
     if not lake.is_absolute():
         lake = PROJECT_ROOT / lake
     profiles = _read_yaml("profiles.yml")
