@@ -56,9 +56,8 @@ social value and identifiable stakeholders, and technology students can explain.
 > describing where recorded federal response and recorded losses diverge most. The analysis is
 > descriptive, not causal.
 
-*(Wording revised after the Milestone 1 proposal was finalized, which is the product contract:
-the earlier "proportionate response" and "largest gaps" framing implied that the data show
-need left unmet; they do not.)*
+*(The scope in `docs/implementation-plan.md` is the product contract. The earlier "proportionate
+response" and "largest gaps" framing implied that the data show need left unmet; they do not.)*
 
 Why A wins:
 

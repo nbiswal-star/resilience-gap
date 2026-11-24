@@ -9,7 +9,7 @@ TEST_DB ?= postgresql://resgap:resgap@localhost:5433/resgap_test
 LINT_PATHS := src tests scripts dashboard
 
 .PHONY: help setup env up down db-wait test-db init-db ingest transform dq report run status \
-        offline-demo test test-unit lint format fixtures dashboard proposal psql clean clean-lake \
+        offline-demo test test-unit lint format fixtures dashboard psql clean clean-lake \
         source-check
 
 help:  ## show this help
@@ -83,9 +83,6 @@ fixtures:  ## rebuild tests/fixtures from live sources (real excerpts; network)
 
 dashboard:  ## interactive dashboard on http://localhost:8501 (installs the dashboard extra)
 	$(UV) run --extra dashboard streamlit run dashboard/app.py
-
-proposal:  ## render docs/proposal/milestone1-proposal.md to HTML and PDF (needs Chrome)
-	$(RUN) python scripts/render_proposal.py
 
 psql:  ## open psql inside the database container
 	docker compose exec db psql -U resgap -d resgap

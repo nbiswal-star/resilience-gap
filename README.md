@@ -266,8 +266,8 @@ The full justification is in [`docs/architecture.md`](docs/architecture.md).
 │   ├── db.py, http.py, config.py
 ├── dashboard/app.py         Streamlit dashboard over serving tables
 ├── tests/                   unit/ (no DB), integration/ (disposable DB), fixtures/ (real excerpts)
-├── scripts/                 build_fixtures.py, render_proposal.py
-├── docs/                    decision record, plan, sources, contracts, DQ log, runbook, proposal
+├── scripts/                 build_fixtures.py
+├── docs/                    decision record, plan, sources, contracts, DQ log, runbook
 ├── reference/               course brief (project-instructions.pdf)
 ├── data/                    object store (git-ignored, created on first run)
 └── reports/                 generated report (git-ignored)
@@ -283,7 +283,6 @@ The full justification is in [`docs/architecture.md`](docs/architecture.md).
 | GNU Make | task runner (preinstalled on macOS/Linux; on Windows use WSL, or the `uv run` commands in §7) | `make --version` |
 | Docker Desktop, running | PostgreSQL 16 container (or see §6.1 for a local PostgreSQL) | `docker info` |
 | Internet access | live runs only; the offline demo and tests need none | — |
-| Google Chrome or Chromium | optional, only to render the proposal PDF | — |
 
 **From zero to a report** (copy and paste; each step lists the expected result):
 
@@ -447,7 +446,6 @@ separately.)
 | `test` / `test-unit` | `pytest -q` with `RESGAP_TEST_DATABASE_URL=$(TEST_DB)` / `pytest tests/unit -q` | see §9 |
 | `lint` / `format` | `ruff check` / `ruff format` on `src tests scripts dashboard` | |
 | `dashboard` | `uv run --extra dashboard streamlit run dashboard/app.py` | installs Streamlit and pandas on first use |
-| `proposal` | `python scripts/render_proposal.py` | Markdown → HTML → PDF (needs Chrome/Chromium) |
 | `fixtures` | `python scripts/build_fixtures.py` | **network**; overwrites `tests/fixtures` with fresh real excerpts (if the agencies have not revised the data, only OpenFEMA's `metadata.rundate` changes) |
 | `psql` | `docker compose exec db psql -U resgap -d resgap` | Docker only |
 | `clean` | remove caches and `reports/resilience_gap_report.html` | keeps data and database |
@@ -812,7 +810,6 @@ by id desc limit 75;`
 | `Critical data-quality failure(s): …` (exit 2) | read `sample` in `ops.dq_results`; fix, exclude, or document the decision in `docs/data-quality.md` |
 | SQL step failed (exit 3) | `make status`; the failing step and message are in `ops.pipeline_runs` |
 | Report shows the wrong profile | `report`/`dq` use the last transform; run `make transform PROFILE=...` first |
-| Proposal PDF not produced | install Chrome/Chromium or set `CHROME=/path/to/chrome`; otherwise open the HTML and print to PDF (Letter) |
 
 **Cleanup:**
 
@@ -952,14 +949,13 @@ Measured on the national run of 2026-11-08 (details in [`docs/data-quality.md`](
 | [`docs/runbook.md`](docs/runbook.md) | operations, source-outage fallbacks, S3 switch, resets |
 | [`docs/rubric-traceability.md`](docs/rubric-traceability.md) | each course requirement → where it is met |
 | [`docs/verification.md`](docs/verification.md) | exact checks run, results, defects found and fixed |
-| [`docs/proposal/`](docs/proposal/) | Milestone 1 proposal (Markdown source, HTML, PDF) |
 | [`seeds/README.md`](seeds/README.md), [`tests/fixtures/README.md`](tests/fixtures/README.md) | what the mappings and fixture excerpts are |
 
 ## 15. Milestones and requirement mapping
 
 | Milestone | Due | Deliverable | Where in this repo |
 |---|---|---|---|
-| M1 Proposal | Mon 9 Nov 2026, 11:59 pm | 1–2 page PDF: team, PM, meeting-notes link, problem, questions, value, motivation | `docs/proposal/milestone1-proposal.md` → `make proposal`. **Fill the placeholders first** (team number and section, names, PM, Google Doc link and date, personal motivation). The Google Doc must already contain one meeting |
+| M1 Proposal | Mon 9 Nov 2026, 11:59 pm | 1–2 page PDF: team, PM, meeting-notes link, problem, questions, value, motivation | Milestone 1 artifacts are kept outside this repository |
 | M2 Data and ingestion | Mon 23 Nov 2026, 11:59 pm | 3–4 page PDF (sources, storage justification, data quality, initial cleaning) and a 5-minute video | content: `docs/sources.md`, `docs/architecture.md`, `docs/data-quality.md`, `ops.dq_results`; video script in `docs/implementation-plan.md` §9 |
 | M3 Final | presentations Mon 7 Dec (A2, B2) or Wed 9 Dec (C2) | 15-minute live presentation, final report, peer evaluation | report, dashboard, serving tables; presentation outline in `docs/implementation-plan.md` §9 |
 

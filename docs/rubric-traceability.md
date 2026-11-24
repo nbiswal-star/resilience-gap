@@ -4,10 +4,10 @@ Numbers refer to the items in `reference/project-instructions.pdf` (95-815 Fall 
 
 | # | Requirement | Where it is met | Evidence |
 |---|---|---|---|
-| A.1 | Business/societal context | Storm losses, presidential disaster declarations and FEMA Hazard Mitigation Assistance, and community vulnerability | `docs/proposal/milestone1-proposal.md` |
+| A.1 | Business/societal context | Storm losses, presidential disaster declarations and FEMA Hazard Mitigation Assistance, and community vulnerability | `README.md`; `docs/implementation-plan.md` §1 |
 | A.2 | Overarching problem statement | How presidential disaster declarations and recorded HMA obligations align with county storm losses and social vulnerability (descriptive; four measures kept separate) | `docs/implementation-plan.md` §1 |
 | A.3 | ≥ 3 concrete questions | Q1–Q4 with exact metrics (+ Q5 stretch) | `implementation-plan.md` §2 |
-| A.4 | Why it matters, for whom, motivation | Stakeholders and motivation | proposal; `decision-record.md` §3 |
+| A.4 | Why it matters, for whom, motivation | Stakeholders and motivation | `decision-record.md` §3 |
 | B.5 | ≥ 3 complementary datasets, different providers | NOAA NCEI, NOAA NWS, FEMA, CDC/ATSDR, Census, BLS (5 agencies) | `docs/sources.md` |
 | B.6 | ≥ 1 semi-structured dataset | OpenFEMA JSON API (3 datasets) | `src/resgap/ingest/openfema.py` |
 | B.7 | Real data, nothing fabricated | Live downloads with SHA-256; test fixtures are byte-subsets of real files | `ops.source_objects`; `tests/fixtures/README.md` |
@@ -26,8 +26,8 @@ Numbers refer to the items in `reference/project-instructions.pdf` (95-815 Fall 
 | E.20 | Serving tables | 14 documented serving tables with explicit grain, keys and table comments (+ star-like curated model) | `docs/data-contracts.md` |
 | E.21 | Consumption tools | HTML report (inline SVG), Streamlit dashboard; any BI tool can read `serving` | `src/resgap/report/`, `dashboard/` |
 | E.22 | Answer questions, discuss meaning | Report sections Q1–Q4 (Q3 stage by stage with the central limitation; Q4 by SVI group, hazard family and FEMA region, with stated limits: descriptive, confounded, sample sizes); final narrative in weeks 3–4 | `reports/` (generated); `implementation-plan.md` §2 |
-| 3.A | Project manager | To be elected (placeholder in proposal) | proposal |
-| 3.B | Weekly meetings, shared Google Doc | Template in the brief; link placeholder in proposal | proposal |
-| 23–26 | Milestone 1 contents | Draft with placeholders for team facts | `docs/proposal/` |
+| 3.A | Project manager | Team administration | Managed outside this repository |
+| 3.B | Weekly meetings, shared Google Doc | Team administration | Managed outside this repository |
+| 23–26 | Milestone 1 contents | Milestone 1 submission | Artifacts kept outside this repository |
 | 27–28 | Milestone 2 PDF + 5-min video | Content plan and video script | `implementation-plan.md` §6, §9 |
 | 29–32 | Final presentation and report | 15-min structure, backup offline demo | `implementation-plan.md` §9 |

@@ -28,9 +28,8 @@ session, so PostgreSQL ran natively on the same port the Compose file publishes,
 | 6 | `make offline-demo` then `make run` on the same database | Live run reloads full files because checksums differ; no warnings (regression check for the bug below) |
 | 7 | `resgap --profile full ingest` / `transform` / `dq` | 97 s ingest (26 NOAA files, 257 MB), ~33 s transform; 1,592,849 storm events; 48,963 declaration areas; 54,638 HMA subapplications; 352 denials; DB 3.0 GB; all 30 checks pass after the decisions recorded in `data-quality.md` |
 | 8 | `docker compose config -q` and with `--profile s3 --profile app` | valid |
-| 9 | `uv run --extra dev python scripts/render_proposal.py` | `milestone1-proposal.pdf (2 pages)` |
-| 10 | Streamlit `AppTest` on `dashboard/app.py` | no exceptions; 4 metrics; 453-row county table (sample) |
-| 11 | `resgap ingest openfema --offline-dir` with FEMA's bulk `DeclarationDenials.json` | 1,303 records loaded (bulk-file fallback works) |
+| 9 | Streamlit `AppTest` on `dashboard/app.py` | no exceptions; 4 metrics; 453-row county table (sample) |
+| 10 | `resgap ingest openfema --offline-dir` with FEMA's bulk `DeclarationDenials.json` | 1,303 records loaded (bulk-file fallback works) |
 
 ## Historical: defects found by verification and fixed (first build)
 
@@ -63,7 +62,6 @@ using the no-Docker path (§6.1) with a new **non-superuser** role and two new d
 | `make transform PROFILE=fixture` then `make report`; back to `make transform` | report header follows the last transform (fixture → sample) |
 | `make lint` / `make test-unit` | `All checks passed!` / `25 passed` |
 | `pytest` without `RESGAP_TEST_DATABASE_URL` | `25 passed, 31 skipped` |
-| `make proposal` | `milestone1-proposal.pdf (2 pages)` |
 | `make fixtures` (network) | rebuilt; only OpenFEMA `metadata.rundate` differs from the committed fixtures |
 | Dashboard (`streamlit.testing` AppTest) | no exceptions; 4 metrics |
 | `make clean` | caches and generated report removed; `reports/.gitkeep` kept |
@@ -75,7 +73,7 @@ Changes made during this audit:
 * `.python-version` pins Python 3.12.
 * `--profile` is accepted before or after the command.
 * `make dq` and `make report` no longer pass a profile they ignore.
-* New Make targets: `proposal`, `clean`, `clean-lake`.
+* New Make targets: `clean`, `clean-lake`.
 * `dashboard/` is linted locally and in CI.
 * CI uses `--extra dev` consistently.
 * Corrected statements:
@@ -127,7 +125,6 @@ Research checks behind the registry:
 | `make offline-demo` (fixture: PA + PR + VI) | report written, no critical failures |
 | `make test` | **90 passed** (52 unit + 38 integration) |
 | `make lint` | All checks passed |
-| `make proposal` | 2 pages |
 | Dashboard (Streamlit AppTest) | no exceptions |
 
 ### Docker, PostgreSQL and live S3 verification
@@ -142,7 +139,6 @@ were exercised:
 | `make test` against the container | **90 passed in 4.24 s** |
 | `make offline-demo` against the container | report written; all **40/40** DQ checks passed |
 | `make source-check` | all **11/11** source contracts usable; fingerprints matched |
-| `make proposal` | PDF regenerated; **2 pages** |
 | `docker compose --profile s3 up -d s3` | SeaweedFS 4.52 started on port 8333 |
 | Fixture pipeline with `RESGAP_OBJECT_STORE=s3` | completed; 40/40 DQ checks passed; bucket contained 10 raw objects |
 | `docker compose --profile app build pipeline` | `resgap-pipeline:latest` built successfully |
@@ -214,7 +210,6 @@ feed any question, and that several documents contradicted each other. Changes:
 | `docker compose config` (all profiles) | valid; `db` published on `127.0.0.1:5433`, `s3` on `127.0.0.1:8333` (confirmed with `docker compose ps` after recreating the containers) |
 | `docker compose --profile app build pipeline`, then `… run --rm pipeline resgap status` | image `resgap-pipeline:latest` built (317 MB); the container listed the new tables from the Compose database |
 | Dashboard (Streamlit `AppTest`) on the fixture and the national database | no exceptions; 4 metrics; Q2 region and Q4 tables render; Q4 grouping switch works |
-| `make proposal` | `milestone1-proposal.pdf (2 pages)` |
 | `make source-check` | not re-run: no source contract (URLs, fields, fingerprints, scopes) changed |
 | GitHub Actions | at this historical checkpoint, runs `42492181411` and `42492264285` were green; the current implementation later passed run `42512681303` at commit `1ba38a2` |
 
@@ -246,7 +241,7 @@ Same raw data before and after; "before" is the previous commit's SQL.
 Counts in this section (64 DQ checks, 155 tests, the stage tables) are intermediate evidence; they
 were current until the next section, which re-measured them after the Connecticut fix.
 
-The Milestone 1 proposal (`docs/proposal/milestone1-proposal.md`) is the product contract.
+The scope in `docs/implementation-plan.md` is the product contract.
 Declaration coverage is designation, not money; DeclarationDenials are outcomes of presidential
 declaration requests, not HMA decisions; HMA records are subapplications that reached FEMA; the
 absence of a county-mapped record does not show that a county never tried to apply. The code was
@@ -600,7 +595,7 @@ superseded HMA-only run).
 
 **Preserved, unchanged:** positive-only obligations, the weather lower bound, state-year
 exclusions, SVI-by-period, the damage-burden output, both Q4 lags, Q2 coverage by state, verbatim
-status, the application-ambiguity wording and the proposal framing (`docs/proposal/` not edited).
+status, the application-ambiguity wording and the project framing.
 
 ### What was run (storm and declaration geography break, 2026-11-08)
 
