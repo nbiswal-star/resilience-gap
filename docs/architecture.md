@@ -17,7 +17,7 @@
    raw/census_popest/vintage=2025/co-est2025-alldata.csv   ·   raw/census_popest_pr/vintage=2025/…
    │  load (COPY), lineage columns
    ▼
- POSTGRESQL 16
+ POSTGRESQL — team AWS RDS 18.3 (local PostgreSQL 16 remains supported for development and tests)
    raw      all-TEXT tables, no constraints; openfema_records and bls_cpi_records (JSONB)
    staging  typed, parsed, de-duplicated, conformed to county FIPS; versioned zone crosswalk and
             date-effective zone resolution; CPI monthly / annual / fiscal year
@@ -45,8 +45,8 @@
 |---|---|---|
 | Original downloaded files and API pages | Object store, kept in the team's **shared Dropbox folder `resgap-lake/`** (every member has edit access); `data/lake/` locally or S3 by configuration | Write-once, immutable, file-shaped artefacts. Keeping the exact bytes (gzip only, lossless) proves fidelity, allows reprocessing without re-downloading, and is the cheapest durable option. A shared cloud folder means the raw data does not live on one person's laptop: any member can browse the original files, and a run with `RESGAP_LAKE_DIR` pointed at a synced copy writes its downloads there. Keys are S3-style (`raw/<source>/<partition>/<file>`), so `RESGAP_OBJECT_STORE=s3` moves the same layout to AWS S3 without code changes |
 | Semi-structured JSON (OpenFEMA) | Object store pages (system of record) **and** `raw.openfema_records` JSONB | The object store keeps each response as received; JSONB lets SQL query, validate and flatten nested and multi-valued fields where the other data already lives. We chose this over MongoDB because the analysis is relational: every JSON record ends up joined to tabular data |
-| Structured CSV / pipe files | PostgreSQL `raw` (all TEXT) | Required by the brief; TEXT means nothing is rejected at load time, and problems are measured later by DQ checks |
-| Cleaned, integrated, analysis-ready data | PostgreSQL `staging` / `curated` / `serving` | Typed columns, primary/foreign keys and constraints enforce integrity only after cleaning. Raw and curated data are separated by schema |
+| Structured CSV / pipe files | Team-hosted AWS RDS PostgreSQL `raw` (all TEXT) | Required by the brief; TEXT means nothing is rejected at load time, and problems are measured later by DQ checks |
+| Cleaned, integrated, analysis-ready data | Team-hosted AWS RDS PostgreSQL `staging` / `curated` / `serving` | Typed columns, primary/foreign keys and constraints enforce integrity only after cleaning. Raw and curated data are separated by schema |
 | Pipeline metadata | PostgreSQL `ops` | Provenance, idempotency state and the data-quality log can be queried next to the data they describe |
 
 ## Idempotency and provenance

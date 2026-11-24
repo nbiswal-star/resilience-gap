@@ -682,3 +682,22 @@ counts are unchanged and listed in the historical comparison section above.
 | DQ checks / tests | 71 / 166 | 75 / 175 |
 | Dashboard `AppTest` | 5 metrics, 12 dataframes | 5 metrics, 12 dataframes |
 | National transform / DQ | ~58 s / ~17 s | ~62 s / ~17 s |
+
+### Team-hosted AWS RDS verification (2026-11-23)
+
+The team database `resgap` was created separately from the existing `hw4` and `justlee` databases
+on `de-postgres` in `us-east-2`. The connection required TLS and reported PostgreSQL 18.3.
+
+| Check | Result |
+|---|---|
+| Initialize `raw`, `staging`, `curated`, `serving` and `ops` on RDS | passed; 56 tables across the five schemas |
+| Live `sample` pipeline from an empty hosted database | exit 0 |
+| Raw storm ingestion | 215,282 rows; zero rejected storm rows |
+| Raw and post-transform data-quality runs | 6/6 and 69/69 checks passed |
+| Serving output | 453 county profiles |
+| Database size after the sample run | 492 MB |
+| Transport | TLS 1.3 (`ssl = true`) |
+| Report | generated successfully from the hosted database |
+
+No password is stored in the repository. Local integration tests continue to use the disposable
+`resgap_test` database and must not target RDS.

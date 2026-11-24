@@ -13,7 +13,7 @@ Numbers refer to the items in `reference/project-instructions.pdf` (95-815 Fall 
 | B.7 | Real data, nothing fabricated | Live downloads with SHA-256; test fixtures are byte-subsets of real files | `ops.source_objects`; `tests/fixtures/README.md` |
 | B.8 | Non-trivial data | 1.59 M events, 104 k FEMA JSON records, 158-column SVI, 47 crosswalk versions (283,796 rows), CPI 1990–2026 | `architecture.md` (measured) |
 | B.9 | Every dataset contributes | NOAA → Q1–Q4 losses; NWS → county placement; declarations → Q2, Q4; HMA → Q3 (observed subapplications, verbatim status, recorded obligation); DeclarationDenials → turned-down requests by region and hazard (Q2/Q4 context, `serving.declaration_request_outcomes`, report and dashboard); SVI → Q1–Q4 vulnerability; Census → denominators and keys; BLS → constant dollars and the significance threshold | `decision-record.md` §3.1; report sections Q1–Q4 |
-| C.10 | Structured data in PostgreSQL; raw preserved; constraints later | `raw` all-TEXT + lineage; keys/FKs in `curated`/`serving` | `src/resgap/ingest/rawload.py`; `sql/curated/*` |
+| C.10 | Structured data in PostgreSQL; raw preserved; constraints later | Team-hosted AWS RDS PostgreSQL; `raw` all-TEXT + lineage; keys/FKs in `curated`/`serving` | `src/resgap/ingest/rawload.py`; `sql/curated/*` |
 | C.11 | Suitable storage for semi-structured data | Object store in the team's shared Dropbox folder `resgap-lake/` (local dir ↔ S3 by config) + JSONB landing | `objectstore.py`; `sql/raw/10_openfema_records.sql` |
 | C.12 | Justify storage choices | Storage table | `architecture.md` |
 | C.13 | Raw separate from curated; staging layer | Schemas `raw`, `staging`, `curated`, `serving` | `sql/` |

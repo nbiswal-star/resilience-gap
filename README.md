@@ -312,7 +312,28 @@ use a second database: `docker compose exec db createdb -U resgap resgap_demo`, 
 
 ## 6. Running the pipeline
 
-### 6.1 Database: Docker (default) or a local PostgreSQL
+### 6.1 Database: team AWS RDS, Docker, or a local PostgreSQL
+
+**Team AWS RDS:** the shared `resgap` database is hosted on PostgreSQL 18.3 at
+`de-postgres.cn2o2ayyyx65.us-east-2.rds.amazonaws.com:5432` in `us-east-2`. TLS is required. Keep
+the password out of `.env`, shell history and Git; prompt for it in the current terminal instead:
+
+```bash
+read -rsp "RDS password: " RESGAP_DB_PASSWORD; echo
+export RESGAP_DATABASE_URL="postgresql://postgres:${RESGAP_DB_PASSWORD}@de-postgres.cn2o2ayyyx65.us-east-2.rds.amazonaws.com:5432/resgap?sslmode=require"
+unset RESGAP_DB_PASSWORD
+export RESGAP_OBJECT_STORE=local
+export RESGAP_LAKE_DIR="$HOME/Library/CloudStorage/Dropbox/resgap-lake"
+
+make setup
+make status                 # confirms the remote database is reachable
+make run PROFILE=sample     # host process -> shared Dropbox raw layer -> hosted PostgreSQL
+```
+
+Do not run `make up` for this path; that target starts the local Docker database. Keep integration
+tests on the disposable local `resgap_test` database because the test suite drops and rebuilds its
+pipeline schemas. The RDS security group must allow TCP 5432 from the current client IP. Each team
+member also needs access to the shared Dropbox folder before using the configuration above.
 
 **Docker:** run `make up`. This starts `postgres:16-alpine`, publishes it on **127.0.0.1:5433**
 (loopback only, so it is not reachable from the network; 5433 avoids clashing with a local 5432),
