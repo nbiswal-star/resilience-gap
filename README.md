@@ -326,9 +326,7 @@ Each teammate who uses the shared RDS database must complete these access steps:
 2. Get the RDS password from the project owner through a private channel. Do not put it in Git,
    chat logs, screenshots or a committed `.env` file.
 
-The repository is private. The repository owner must add each teammate as a collaborator. Each
-teammate must accept the GitHub invitation and authenticate with GitHub before cloning. Then clone
-and configure the shared path. This password prompt works in both Bash and zsh:
+Clone and configure the shared path. This password prompt works in both Bash and zsh:
 
 ```bash
 git clone https://github.com/nbiswal-star/resilience-gap.git
